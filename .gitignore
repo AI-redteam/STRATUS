@@ -1,8 +1,8 @@
 # Binaries
 /bin/
 /dist/
-stratus
-stratus-server
+/stratus
+/stratus-server
 *.exe
 *.dll
 *.so

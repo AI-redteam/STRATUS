@@ -74,7 +74,7 @@ func (f *ClientFactory) ListIAMUsers(ctx context.Context, creds SessionCredentia
 	}
 
 	f.rateLimiter.Wait("iam")
-	f.logger.Debug().Str("service", "iam").Str("op", "ListUsers").Msg("aws api call")
+	f.logAPICall("iam", "ListUsers", nil, nil)
 
 	client := f.IAMClient(creds)
 	var users []IAMUserSummary
@@ -105,7 +105,7 @@ func (f *ClientFactory) ListIAMRoles(ctx context.Context, creds SessionCredentia
 	}
 
 	f.rateLimiter.Wait("iam")
-	f.logger.Debug().Str("service", "iam").Str("op", "ListRoles").Msg("aws api call")
+	f.logAPICall("iam", "ListRoles", nil, nil)
 
 	client := f.IAMClient(creds)
 	var roles []IAMRoleSummary
@@ -136,7 +136,7 @@ func (f *ClientFactory) ListIAMPolicies(ctx context.Context, creds SessionCreden
 	}
 
 	f.rateLimiter.Wait("iam")
-	f.logger.Debug().Str("service", "iam").Str("op", "ListPolicies").Msg("aws api call")
+	f.logAPICall("iam", "ListPolicies", nil, nil)
 
 	client := f.IAMClient(creds)
 	var policies []IAMPolicySummary
@@ -170,7 +170,7 @@ func (f *ClientFactory) GetIAMUserDetail(ctx context.Context, creds SessionCrede
 	}
 
 	f.rateLimiter.Wait("iam")
-	f.logger.Debug().Str("service", "iam").Str("op", "GetUser").Str("user", userName).Msg("aws api call")
+	f.logAPICall("iam", "GetUser", map[string]string{"user": userName}, nil)
 
 	client := f.IAMClient(creds)
 	out, err := client.GetUser(ctx, &iam.GetUserInput{UserName: &userName})
@@ -239,7 +239,7 @@ func (f *ClientFactory) GetIAMRoleDetail(ctx context.Context, creds SessionCrede
 	}
 
 	f.rateLimiter.Wait("iam")
-	f.logger.Debug().Str("service", "iam").Str("op", "GetRole").Str("role", roleName).Msg("aws api call")
+	f.logAPICall("iam", "GetRole", map[string]string{"role": roleName}, nil)
 
 	client := f.IAMClient(creds)
 	out, err := client.GetRole(ctx, &iam.GetRoleInput{RoleName: &roleName})
@@ -298,7 +298,7 @@ func (f *ClientFactory) ListS3Buckets(ctx context.Context, creds SessionCredenti
 	}
 
 	f.rateLimiter.Wait("s3")
-	f.logger.Debug().Str("service", "s3").Str("op", "ListBuckets").Msg("aws api call")
+	f.logAPICall("s3", "ListBuckets", nil, nil)
 
 	client := f.S3Client(creds)
 	out, err := client.ListBuckets(ctx, &s3.ListBucketsInput{})
@@ -328,7 +328,7 @@ func (f *ClientFactory) GetBucketPolicy(ctx context.Context, creds SessionCreden
 	}
 
 	f.rateLimiter.Wait("s3")
-	f.logger.Debug().Str("service", "s3").Str("op", "GetBucketPolicy").Str("bucket", bucket).Msg("aws api call")
+	f.logAPICall("s3", "GetBucketPolicy", map[string]string{"bucket": bucket}, nil)
 
 	client := f.S3Client(creds)
 	out, err := client.GetBucketPolicy(ctx, &s3.GetBucketPolicyInput{Bucket: &bucket})
@@ -350,7 +350,7 @@ type S3ObjectSummary struct {
 
 func (f *ClientFactory) ListS3Objects(ctx context.Context, creds SessionCredentials, bucket, prefix string, maxKeys int32) ([]S3ObjectSummary, error) {
 	f.rateLimiter.Wait("s3")
-	f.logger.Debug().Str("service", "s3").Str("op", "ListObjectsV2").Str("bucket", bucket).Msg("aws api call")
+	f.logAPICall("s3", "ListObjectsV2", map[string]string{"bucket": bucket}, nil)
 
 	client := f.S3Client(creds)
 	input := &s3.ListObjectsV2Input{
@@ -401,7 +401,7 @@ func (f *ClientFactory) ListEC2Instances(ctx context.Context, creds SessionCrede
 	}
 
 	f.rateLimiter.Wait("ec2")
-	f.logger.Debug().Str("service", "ec2").Str("op", "DescribeInstances").Msg("aws api call")
+	f.logAPICall("ec2", "DescribeInstances", nil, nil)
 
 	client := f.EC2Client(creds)
 	var instances []EC2InstanceSummary
@@ -456,7 +456,7 @@ func (f *ClientFactory) ListSecurityGroups(ctx context.Context, creds SessionCre
 	}
 
 	f.rateLimiter.Wait("ec2")
-	f.logger.Debug().Str("service", "ec2").Str("op", "DescribeSecurityGroups").Msg("aws api call")
+	f.logAPICall("ec2", "DescribeSecurityGroups", nil, nil)
 
 	client := f.EC2Client(creds)
 	var groups []SecurityGroupSummary
@@ -497,7 +497,7 @@ func (f *ClientFactory) ListVPCs(ctx context.Context, creds SessionCredentials) 
 	}
 
 	f.rateLimiter.Wait("ec2")
-	f.logger.Debug().Str("service", "ec2").Str("op", "DescribeVpcs").Msg("aws api call")
+	f.logAPICall("ec2", "DescribeVpcs", nil, nil)
 
 	client := f.EC2Client(creds)
 	out, err := client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{})
@@ -544,7 +544,7 @@ func (f *ClientFactory) ListLambdaFunctions(ctx context.Context, creds SessionCr
 	}
 
 	f.rateLimiter.Wait("lambda")
-	f.logger.Debug().Str("service", "lambda").Str("op", "ListFunctions").Msg("aws api call")
+	f.logAPICall("lambda", "ListFunctions", nil, nil)
 
 	client := f.LambdaClient(creds)
 	var fns []LambdaSummary
@@ -596,7 +596,7 @@ func (f *ClientFactory) ListSecrets(ctx context.Context, creds SessionCredential
 	}
 
 	f.rateLimiter.Wait("secretsmanager")
-	f.logger.Debug().Str("service", "secretsmanager").Str("op", "ListSecrets").Msg("aws api call")
+	f.logAPICall("secretsmanager", "ListSecrets", nil, nil)
 
 	client := f.SecretsManagerClient(creds)
 	var secrets []SecretSummary
@@ -631,7 +631,7 @@ func (f *ClientFactory) ListSecrets(ctx context.Context, creds SessionCredential
 // GetSecretValue retrieves the actual secret value. Requires --retrieve-value flag.
 func (f *ClientFactory) GetSecretValue(ctx context.Context, creds SessionCredentials, secretID string) (string, error) {
 	f.rateLimiter.Wait("secretsmanager")
-	f.logger.Debug().Str("service", "secretsmanager").Str("op", "GetSecretValue").Str("secret", secretID).Msg("aws api call")
+	f.logAPICall("secretsmanager", "GetSecretValue", map[string]string{"secret": secretID}, nil)
 
 	client := f.SecretsManagerClient(creds)
 	out, err := client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &secretID})
@@ -660,7 +660,7 @@ func (f *ClientFactory) ListSSMParameters(ctx context.Context, creds SessionCred
 	}
 
 	f.rateLimiter.Wait("ssm")
-	f.logger.Debug().Str("service", "ssm").Str("op", "DescribeParameters").Msg("aws api call")
+	f.logAPICall("ssm", "DescribeParameters", nil, nil)
 
 	client := f.SSMClient(creds)
 	var params []SSMParameterSummary
@@ -691,7 +691,7 @@ func (f *ClientFactory) ListSSMParameters(ctx context.Context, creds SessionCred
 // GetSSMParameterValue retrieves a parameter value. Requires --retrieve-value for SecureString.
 func (f *ClientFactory) GetSSMParameterValue(ctx context.Context, creds SessionCredentials, name string, withDecryption bool) (string, string, error) {
 	f.rateLimiter.Wait("ssm")
-	f.logger.Debug().Str("service", "ssm").Str("op", "GetParameter").Str("name", name).Msg("aws api call")
+	f.logAPICall("ssm", "GetParameter", map[string]string{"name": name}, nil)
 
 	client := f.SSMClient(creds)
 	out, err := client.GetParameter(ctx, &ssm.GetParameterInput{
@@ -717,7 +717,7 @@ type CloudTrailEventSummary struct {
 
 func (f *ClientFactory) LookupCloudTrailEvents(ctx context.Context, creds SessionCredentials, maxResults int32) ([]CloudTrailEventSummary, error) {
 	f.rateLimiter.Wait("cloudtrail")
-	f.logger.Debug().Str("service", "cloudtrail").Str("op", "LookupEvents").Msg("aws api call")
+	f.logAPICall("cloudtrail", "LookupEvents", nil, nil)
 
 	client := f.CloudTrailClient(creds)
 	out, err := client.LookupEvents(ctx, &cloudtrail.LookupEventsInput{
@@ -760,7 +760,7 @@ func (f *ClientFactory) ListKMSKeys(ctx context.Context, creds SessionCredential
 	}
 
 	f.rateLimiter.Wait("kms")
-	f.logger.Debug().Str("service", "kms").Str("op", "ListKeys").Msg("aws api call")
+	f.logAPICall("kms", "ListKeys", nil, nil)
 
 	client := f.KMSClient(creds)
 	out, err := client.ListKeys(ctx, &kms.ListKeysInput{})
@@ -813,7 +813,7 @@ func (f *ClientFactory) ListLogGroups(ctx context.Context, creds SessionCredenti
 	}
 
 	f.rateLimiter.Wait("logs")
-	f.logger.Debug().Str("service", "logs").Str("op", "DescribeLogGroups").Msg("aws api call")
+	f.logAPICall("logs", "DescribeLogGroups", nil, nil)
 
 	client := f.CloudWatchLogsClient(creds)
 	input := &cloudwatchlogs.DescribeLogGroupsInput{}

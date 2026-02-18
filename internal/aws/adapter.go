@@ -21,14 +21,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/rs/zerolog"
+	"github.com/stratus-framework/stratus/internal/audit"
 )
 
 // SessionCredentials holds the credential material needed to create AWS clients.
 type SessionCredentials struct {
-	AccessKeyID     string
+	AccessKeyID    string
 	SecretAccessKey string
-	SessionToken    string
-	Region          string
+	SessionToken   string
+	Region         string
 }
 
 // ClientFactory creates rate-limited, audit-logged AWS service clients.
@@ -37,6 +38,8 @@ type ClientFactory struct {
 	rateLimiter *RateLimiter
 	logger      zerolog.Logger
 	cache       *ResponseCache
+	auditLogger *audit.Logger
+	sessionUUID string
 }
 
 // NewClientFactory creates a new AWS client factory.
@@ -57,6 +60,26 @@ func NewClientFactoryWithRate(logger zerolog.Logger, ratePerSec int, cacheTTL ti
 	}
 }
 
+// NewClientFactoryWithAudit creates a factory that records every API call to
+// the audit database.
+func NewClientFactoryWithAudit(logger zerolog.Logger, al *audit.Logger, sessionUUID string) *ClientFactory {
+	return &ClientFactory{
+		rateLimiter: NewRateLimiter(10),
+		logger:      logger,
+		cache:       NewResponseCache(5 * time.Minute),
+		auditLogger: al,
+		sessionUUID: sessionUUID,
+	}
+}
+
+// SetAudit enables audit logging on an existing factory.
+func (f *ClientFactory) SetAudit(al *audit.Logger, sessionUUID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.auditLogger = al
+	f.sessionUUID = sessionUUID
+}
+
 func (f *ClientFactory) awsConfig(creds SessionCredentials) aws.Config {
 	return aws.Config{
 		Region: creds.Region,
@@ -66,6 +89,25 @@ func (f *ClientFactory) awsConfig(creds SessionCredentials) aws.Config {
 			creds.SessionToken,
 		),
 		RetryMaxAttempts: 5,
+	}
+}
+
+// logAPICall records an API call to both the structured logger and the audit database.
+func (f *ClientFactory) logAPICall(service, operation string, params map[string]string, err error) {
+	f.logger.Debug().Str("service", service).Str("operation", operation).Msg("aws api call")
+
+	if f.auditLogger != nil {
+		detail := map[string]string{
+			"service":   service,
+			"operation": operation,
+		}
+		for k, v := range params {
+			detail[k] = v
+		}
+		if err != nil {
+			detail["error"] = err.Error()
+		}
+		f.auditLogger.Log(audit.EventAPICall, "local", f.sessionUUID, "", detail)
 	}
 }
 
@@ -126,11 +168,12 @@ func (f *ClientFactory) EC2ClientForRegion(creds SessionCredentials, region stri
 // GetCallerIdentity performs sts:GetCallerIdentity.
 func (f *ClientFactory) GetCallerIdentity(ctx context.Context, creds SessionCredentials) (arn, account, userID string, err error) {
 	f.rateLimiter.Wait("sts")
-	f.logger.Debug().Str("service", "sts").Str("operation", "GetCallerIdentity").Msg("aws api call")
+	f.logAPICall("sts", "GetCallerIdentity", nil, nil)
 
 	client := f.STSClient(creds)
 	result, err := client.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
+		f.logAPICall("sts", "GetCallerIdentity", nil, err)
 		return "", "", "", fmt.Errorf("GetCallerIdentity: %w", err)
 	}
 	return aws.ToString(result.Arn), aws.ToString(result.Account), aws.ToString(result.UserId), nil
@@ -139,7 +182,6 @@ func (f *ClientFactory) GetCallerIdentity(ctx context.Context, creds SessionCred
 // WaitForService blocks until the rate limit allows a call.
 func (f *ClientFactory) WaitForService(service string) {
 	f.rateLimiter.Wait(service)
-	f.logger.Debug().Str("service", service).Msg("rate limit cleared")
 }
 
 // --- Rate Limiter ---

@@ -46,13 +46,13 @@ func awsClientSetup() (*awsops.ClientFactory, awsops.SessionCredentials, func(),
 	}
 	cleanup := func() { engine.Close() }
 
-	creds, _, err := awsops.ResolveActiveCredentials(engine)
+	creds, sess, err := awsops.ResolveActiveCredentials(engine)
 	if err != nil {
 		cleanup()
 		return nil, awsops.SessionCredentials{}, nil, err
 	}
 
-	factory := awsops.NewClientFactory(engine.Logger)
+	factory := awsops.NewClientFactoryWithAudit(engine.Logger, engine.AuditLogger, sess.UUID)
 	return factory, creds, cleanup, nil
 }
 

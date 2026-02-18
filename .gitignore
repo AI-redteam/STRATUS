@@ -1,0 +1,43 @@
+# Binaries
+/bin/
+/dist/
+stratus
+stratus-server
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test
+*.test
+*.out
+coverage.html
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Workspace data (never commit secrets or engagement data)
+*.vault
+*.db
+workspaces/
+~/.stratus/
+
+# Environment
+.env
+.env.*
+
+# Plugin binaries
+plugins/*.so
+plugins/*.dylib
+plugins/*.dll

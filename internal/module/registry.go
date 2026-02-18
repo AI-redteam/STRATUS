@@ -501,4 +501,7 @@ func RegisterBuiltinModules(reg *Registry, factory *stratusaws.ClientFactory, gs
 	reg.Register(&FindPublicBucketsModule{factory: factory})
 	reg.Register(&CloudTrailStatusModule{factory: factory})
 	reg.Register(&KMSKeyInventoryModule{factory: factory})
+	reg.Register(&EnumerateLambdaModule{factory: factory})
+	reg.Register(&EnumerateEC2Module{factory: factory})
+	reg.Register(&SecurityGroupAuditModule{factory: factory})
 }

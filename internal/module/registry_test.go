@@ -112,17 +112,20 @@ func TestBuiltinModulesRegister(t *testing.T) {
 	RegisterBuiltinModules(reg, nil, nil)
 
 	metas := reg.List()
-	if len(metas) != 5 {
-		t.Fatalf("expected 5 built-in modules, got %d", len(metas))
+	if len(metas) != 8 {
+		t.Fatalf("expected 8 built-in modules, got %d", len(metas))
 	}
 
 	// Verify all expected modules are present
 	expectedIDs := map[string]bool{
-		"com.stratus.iam.enumerate-roles":  false,
-		"com.stratus.iam.enumerate-users":  false,
-		"com.stratus.s3.find-public-buckets": false,
-		"com.stratus.cloudtrail.status":    false,
-		"com.stratus.kms.key-inventory":    false,
+		"com.stratus.iam.enumerate-roles":      false,
+		"com.stratus.iam.enumerate-users":      false,
+		"com.stratus.s3.find-public-buckets":   false,
+		"com.stratus.cloudtrail.status":        false,
+		"com.stratus.kms.key-inventory":        false,
+		"com.stratus.lambda.enumerate-functions": false,
+		"com.stratus.ec2.enumerate-instances":  false,
+		"com.stratus.ec2.security-group-audit": false,
 	}
 
 	for _, meta := range metas {

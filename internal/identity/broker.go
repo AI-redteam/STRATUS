@@ -73,9 +73,15 @@ type WebIdentityInput struct {
 
 // CredProcessInput holds parameters for credential_process identity.
 type CredProcessInput struct {
-	Command string
-	Label   string
-	Tags    []string
+	Command      string
+	Label        string
+	Tags         []string
+	Region       string
+	// If the command was already executed, provide the captured credentials:
+	AccessKey    string
+	SecretKey    string
+	SessionToken string
+	Expiry       *time.Time
 }
 
 // IMDSCaptureInput holds parameters for IMDS snapshot import.
@@ -340,15 +346,23 @@ func (b *Broker) ImportWebIdentity(input WebIdentityInput) (*core.IdentityRecord
 }
 
 // ImportCredProcess imports a credential_process identity.
-func (b *Broker) ImportCredProcess(input CredProcessInput) (*core.IdentityRecord, error) {
+// If Credentials are provided (from executing the command), a session is also created.
+func (b *Broker) ImportCredProcess(input CredProcessInput) (*core.IdentityRecord, *core.SessionRecord, error) {
 	identityUUID := uuid.New().String()
 	vaultKey := "identity:" + identityUUID
 
-	secretData, _ := json.Marshal(map[string]string{
+	secretMap := map[string]string{
 		"command": input.Command,
-	})
+	}
+	if input.AccessKey != "" {
+		secretMap["access_key"] = input.AccessKey
+		secretMap["secret_key"] = input.SecretKey
+		secretMap["session_token"] = input.SessionToken
+	}
+
+	secretData, _ := json.Marshal(secretMap)
 	if err := b.vault.Put(vaultKey, secretData); err != nil {
-		return nil, fmt.Errorf("storing cred-process config in vault: %w", err)
+		return nil, nil, fmt.Errorf("storing cred-process config in vault: %w", err)
 	}
 
 	tagsJSON, _ := json.Marshal(input.Tags)
@@ -378,14 +392,41 @@ func (b *Broker) ImportCredProcess(input CredProcessInput) (*core.IdentityRecord
 		identity.CreatedBy,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("inserting identity: %w", err)
+		return nil, nil, fmt.Errorf("inserting identity: %w", err)
+	}
+
+	// Create session if credentials were captured
+	var session *core.SessionRecord
+	if input.AccessKey != "" {
+		region := input.Region
+		if region == "" {
+			region = "us-east-1"
+		}
+		refreshMethod := "credential_process"
+		session, err = b.createSession(identityUUID, input.AccessKey, input.Label, region, input.Expiry, &refreshMethod, nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("creating session: %w", err)
+		}
+
+		b.audit.Log(audit.EventIdentityImported, "local", session.UUID, "", map[string]string{
+			"identity_uuid": identityUUID,
+			"source_type":   string(core.SourceCredProcess),
+			"label":         input.Label,
+		})
+	} else {
+		b.audit.Log(audit.EventIdentityImported, "local", "", "", map[string]string{
+			"identity_uuid": identityUUID,
+			"source_type":   string(core.SourceCredProcess),
+			"label":         input.Label,
+			"note":          "command stored, not yet executed",
+		})
 	}
 
 	if err := b.vault.Save(); err != nil {
-		return nil, fmt.Errorf("saving vault: %w", err)
+		return nil, nil, fmt.Errorf("saving vault: %w", err)
 	}
 
-	return identity, nil
+	return identity, session, nil
 }
 
 // ImportIMDSCapture imports credentials captured from an EC2 instance metadata service.

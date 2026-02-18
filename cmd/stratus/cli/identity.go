@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -318,13 +320,28 @@ func newIdentityAddWebIdentityCmd() *cobra.Command {
 
 func newIdentityAddCredProcessCmd() *cobra.Command {
 	var (
-		command string
-		label   string
+		command  string
+		label    string
+		region   string
+		noExec   bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "cred-process",
 		Short: "Import a credential_process identity",
+		Long: `Import credentials from an external credential helper program.
+
+The command must output JSON conforming to the AWS credential_process protocol:
+  {
+    "Version": 1,
+    "AccessKeyId": "AKIA...",
+    "SecretAccessKey": "...",
+    "SessionToken": "...",
+    "Expiration": "2024-01-01T00:00:00Z"
+  }
+
+By default, the command is executed immediately and credentials are captured.
+Use --no-exec to store the command reference without executing it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			engine, err := loadActiveEngine()
 			if err != nil {
@@ -336,12 +353,36 @@ func newIdentityAddCredProcessCmd() *cobra.Command {
 				return fmt.Errorf("--command is required")
 			}
 
-			broker := identity.NewBroker(engine.MetadataDB, engine.Vault, engine.AuditLogger, engine.Workspace.UUID)
+			if label == "" {
+				label = "cred-process"
+			}
 
-			id, err := broker.ImportCredProcess(identity.CredProcessInput{
+			input := identity.CredProcessInput{
 				Command: command,
 				Label:   label,
-			})
+				Region:  region,
+			}
+
+			if !noExec {
+				// Execute the command and capture credentials
+				out, execErr := execCredentialProcess(command)
+				if execErr != nil {
+					return fmt.Errorf("executing credential process: %w", execErr)
+				}
+				input.AccessKey = out.AccessKeyID
+				input.SecretKey = out.SecretAccessKey
+				input.SessionToken = out.SessionToken
+				if out.Expiration != "" {
+					t, err := time.Parse(time.RFC3339, out.Expiration)
+					if err == nil {
+						input.Expiry = &t
+					}
+				}
+			}
+
+			broker := identity.NewBroker(engine.MetadataDB, engine.Vault, engine.AuditLogger, engine.Workspace.UUID)
+
+			id, session, err := broker.ImportCredProcess(input)
 			if err != nil {
 				return err
 			}
@@ -349,15 +390,57 @@ func newIdentityAddCredProcessCmd() *cobra.Command {
 			fmt.Printf("Credential process identity imported.\n")
 			fmt.Printf("  Identity UUID: %s\n", id.UUID)
 			fmt.Printf("  Command:       %s\n", command)
+			if session != nil {
+				fmt.Printf("  Session UUID:  %s\n", session.UUID)
+				if input.Expiry != nil {
+					fmt.Printf("  Expires:       %s\n", input.Expiry.Format(time.RFC3339))
+				}
+				fmt.Println("\nUse 'stratus sessions use " + session.UUID[:8] + "' to activate this session.")
+			} else {
+				fmt.Println("  (command stored, use --no-exec=false to execute)")
+			}
 
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&command, "command", "", "Shell command for credential_process")
+	cmd.Flags().StringVar(&command, "command", "", "Shell command for credential_process (required)")
 	cmd.Flags().StringVar(&label, "label", "", "Human-readable label")
+	cmd.Flags().StringVar(&region, "region", "us-east-1", "Default AWS region")
+	cmd.Flags().BoolVar(&noExec, "no-exec", false, "Store command without executing it")
 
 	return cmd
+}
+
+type credProcessOutput struct {
+	Version         int    `json:"Version"`
+	AccessKeyID     string `json:"AccessKeyId"`
+	SecretAccessKey string `json:"SecretAccessKey"`
+	SessionToken    string `json:"SessionToken"`
+	Expiration      string `json:"Expiration"`
+}
+
+func execCredentialProcess(command string) (*credProcessOutput, error) {
+	out, err := execCommand(command)
+	if err != nil {
+		return nil, err
+	}
+
+	var result credProcessOutput
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("parsing credential_process output: %w", err)
+	}
+
+	if result.AccessKeyID == "" || result.SecretAccessKey == "" {
+		return nil, fmt.Errorf("credential_process output missing AccessKeyId or SecretAccessKey")
+	}
+
+	return &result, nil
+}
+
+func execCommand(command string) ([]byte, error) {
+	cmd := execCommandShell(command)
+	return cmd.Output()
 }
 
 func newIdentityAddIMDSCaptureCmd() *cobra.Command {
@@ -591,4 +674,12 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+// execCommandShell wraps a command string in the platform's shell.
+func execCommandShell(command string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.Command("cmd", "/C", command)
+	}
+	return exec.Command("sh", "-c", command)
 }

@@ -1,0 +1,230 @@
+syntax = "proto3";
+
+package stratus.v1;
+
+option go_package = "github.com/stratus-framework/stratus/internal/grpcapi";
+
+// StratusService is the internal gRPC API shared by CLI, GUI, and teamserver.
+service StratusService {
+  // Workspace operations
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (WorkspaceResponse);
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (WorkspaceResponse);
+
+  // Identity operations
+  rpc ImportIdentity(ImportIdentityRequest) returns (IdentityResponse);
+  rpc ListIdentities(ListIdentitiesRequest) returns (ListIdentitiesResponse);
+  rpc GetIdentity(GetIdentityRequest) returns (IdentityResponse);
+  rpc ArchiveIdentity(ArchiveIdentityRequest) returns (OperationResponse);
+
+  // Session operations
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc ActivateSession(ActivateSessionRequest) returns (SessionResponse);
+  rpc PopSession(PopSessionRequest) returns (SessionResponse);
+  rpc PeekStack(PeekStackRequest) returns (ListSessionsResponse);
+  rpc GetActiveSession(GetActiveSessionRequest) returns (SessionResponse);
+  rpc ExpireSession(ExpireSessionRequest) returns (OperationResponse);
+
+  // Pivot graph operations
+  rpc FindPath(FindPathRequest) returns (FindPathResponse);
+  rpc GetHops(GetHopsRequest) returns (GetHopsResponse);
+  rpc GetGraphStats(GetGraphStatsRequest) returns (GraphStatsResponse);
+  rpc SnapshotGraph(SnapshotGraphRequest) returns (SnapshotGraphResponse);
+
+  // Module operations
+  rpc ListModules(ListModulesRequest) returns (ListModulesResponse);
+  rpc RunModule(RunModuleRequest) returns (RunModuleResponse);
+  rpc GetRunStatus(GetRunStatusRequest) returns (RunStatusResponse);
+  rpc CancelRun(CancelRunRequest) returns (OperationResponse);
+}
+
+// Common messages
+message OperationResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Workspace messages
+message CreateWorkspaceRequest {
+  string name = 1;
+  string description = 2;
+  repeated string scope_account_ids = 3;
+  repeated string scope_regions = 4;
+  string scope_partition = 5;
+}
+
+message WorkspaceResponse {
+  string uuid = 1;
+  string name = 2;
+  string description = 3;
+  string owner = 4;
+  string created_at = 5;
+  string path = 6;
+}
+
+message ListWorkspacesRequest {}
+
+message ListWorkspacesResponse {
+  repeated WorkspaceResponse workspaces = 1;
+}
+
+message GetWorkspaceRequest {
+  string uuid_or_name = 1;
+}
+
+// Identity messages
+message ImportIdentityRequest {
+  string source_type = 1;  // iam_user_key, sts_session, assume_role, etc.
+  string label = 2;
+  map<string, string> config = 3;  // Type-specific configuration
+}
+
+message IdentityResponse {
+  string uuid = 1;
+  string label = 2;
+  string source_type = 3;
+  string principal_arn = 4;
+  string account_id = 5;
+  string acquired_at = 6;
+}
+
+message ListIdentitiesRequest {
+  string workspace_uuid = 1;
+}
+
+message ListIdentitiesResponse {
+  repeated IdentityResponse identities = 1;
+}
+
+message GetIdentityRequest {
+  string uuid_or_label = 1;
+}
+
+message ArchiveIdentityRequest {
+  string uuid_or_label = 1;
+}
+
+// Session messages
+message SessionResponse {
+  string uuid = 1;
+  string identity_uuid = 2;
+  string session_name = 3;
+  string region = 4;
+  string health_status = 5;
+  string expiry = 6;
+  bool is_active = 7;
+}
+
+message ListSessionsRequest {
+  string workspace_uuid = 1;
+}
+
+message ListSessionsResponse {
+  repeated SessionResponse sessions = 1;
+}
+
+message ActivateSessionRequest {
+  string uuid_or_label = 1;
+}
+
+message PopSessionRequest {}
+
+message PeekStackRequest {}
+
+message GetActiveSessionRequest {}
+
+message ExpireSessionRequest {
+  string uuid = 1;
+}
+
+// Graph messages
+message FindPathRequest {
+  string from_node_id = 1;
+  string to_node_id = 2;
+}
+
+message GraphEdgeMessage {
+  string uuid = 1;
+  string source_node_id = 2;
+  string target_node_id = 3;
+  string edge_type = 4;
+  double confidence = 5;
+}
+
+message FindPathResponse {
+  repeated GraphEdgeMessage path = 1;
+  double confidence = 2;
+  int32 hops = 3;
+}
+
+message GetHopsRequest {
+  string from_node_id = 1;
+}
+
+message GetHopsResponse {
+  repeated GraphEdgeMessage edges = 1;
+}
+
+message GetGraphStatsRequest {}
+
+message GraphStatsResponse {
+  int32 nodes = 1;
+  int32 edges = 2;
+  int32 stale_edges = 3;
+}
+
+message SnapshotGraphRequest {
+  string output_path = 1;
+}
+
+message SnapshotGraphResponse {
+  bytes data = 1;
+}
+
+// Module messages
+message ModuleInfo {
+  string id = 1;
+  string name = 2;
+  string version = 3;
+  string description = 4;
+  string risk_class = 5;
+  repeated string services = 6;
+}
+
+message ListModulesRequest {
+  string keyword = 1;
+  string service = 2;
+  string risk_class = 3;
+}
+
+message ListModulesResponse {
+  repeated ModuleInfo modules = 1;
+}
+
+message RunModuleRequest {
+  string module_id = 1;
+  map<string, string> inputs = 2;
+  bool dry_run = 3;
+}
+
+message RunModuleResponse {
+  string run_uuid = 1;
+  string status = 2;
+  string output_json = 3;
+}
+
+message GetRunStatusRequest {
+  string run_uuid = 1;
+}
+
+message RunStatusResponse {
+  string run_uuid = 1;
+  string status = 2;
+  string started_at = 3;
+  string completed_at = 4;
+  string output_json = 5;
+}
+
+message CancelRunRequest {
+  string run_uuid = 1;
+}

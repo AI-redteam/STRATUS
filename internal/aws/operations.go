@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 // ---- IAM operations ----
@@ -880,6 +881,55 @@ func (f *ClientFactory) ListRegions(ctx context.Context, creds SessionCredential
 	}
 	f.cache.Put(cacheKey, regions)
 	return regions, nil
+}
+
+// ---- STS operations ----
+
+// AssumeRoleResult holds the output of an STS AssumeRole call.
+type AssumeRoleResult struct {
+	AccessKeyID    string    `json:"access_key_id"`
+	SecretAccessKey string   `json:"secret_access_key"`
+	SessionToken   string    `json:"session_token"`
+	Expiration     time.Time `json:"expiration"`
+	AssumedRoleARN string    `json:"assumed_role_arn"`
+}
+
+// AssumeRole calls STS AssumeRole and returns the temporary credentials.
+func (f *ClientFactory) AssumeRole(ctx context.Context, creds SessionCredentials, roleARN, sessionName, externalID string, durationSecs int32) (*AssumeRoleResult, error) {
+	f.rateLimiter.Wait("sts")
+	f.logAPICall("sts", "AssumeRole", map[string]string{
+		"role_arn":     roleARN,
+		"session_name": sessionName,
+	}, nil)
+
+	client := f.STSClient(creds)
+	input := &sts.AssumeRoleInput{
+		RoleArn:         &roleARN,
+		RoleSessionName: &sessionName,
+	}
+	if externalID != "" {
+		input.ExternalId = &externalID
+	}
+	if durationSecs > 0 {
+		input.DurationSeconds = &durationSecs
+	}
+
+	out, err := client.AssumeRole(ctx, input)
+	if err != nil {
+		f.logAPICall("sts", "AssumeRole", map[string]string{"role_arn": roleARN}, err)
+		return nil, fmt.Errorf("AssumeRole(%s): %w", roleARN, err)
+	}
+
+	result := &AssumeRoleResult{
+		AccessKeyID:    aws.ToString(out.Credentials.AccessKeyId),
+		SecretAccessKey: aws.ToString(out.Credentials.SecretAccessKey),
+		SessionToken:   aws.ToString(out.Credentials.SessionToken),
+		AssumedRoleARN: aws.ToString(out.AssumedRoleUser.Arn),
+	}
+	if out.Credentials.Expiration != nil {
+		result.Expiration = *out.Credentials.Expiration
+	}
+	return result, nil
 }
 
 // ---- helpers ----

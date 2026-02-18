@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
+	awsops "github.com/stratus-framework/stratus/internal/aws"
+	"github.com/stratus-framework/stratus/internal/identity"
 	"github.com/stratus-framework/stratus/internal/session"
 )
 
@@ -24,6 +28,7 @@ func RegisterSessionCommands(root *cobra.Command) {
 	sessCmd.AddCommand(newSessionPeekCmd())
 	sessCmd.AddCommand(newSessionWhoamiCmd())
 	sessCmd.AddCommand(newSessionHealthCmd())
+	sessCmd.AddCommand(newSessionRefreshCmd())
 	sessCmd.AddCommand(newSessionExpireCmd())
 
 	root.AddCommand(sessCmd)
@@ -309,6 +314,129 @@ func newSessionHealthCmd() *cobra.Command {
 			if len(expiring) > 0 {
 				fmt.Printf("\nWarning: %d session(s) expiring soon or already expired.\n", len(expiring))
 			}
+
+			return nil
+		},
+	}
+}
+
+func newSessionRefreshCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "refresh <uuid>",
+		Short: "Re-derive STS credentials for a refreshable session",
+		Long: `Re-assume the role using the original parent session's credentials.
+Creates a new session with fresh temporary credentials and expires the old session.
+
+Only sessions created via 'pivot assume' (refresh_method=assume_role) are refreshable.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			engine, err := loadActiveEngine()
+			if err != nil {
+				return err
+			}
+			defer engine.Close()
+
+			mgr := session.NewManager(engine.MetadataDB, engine.AuditLogger, engine.Workspace.UUID)
+			sess, err := mgr.GetSession(args[0])
+			if err != nil {
+				return err
+			}
+
+			if sess.RefreshMethod == nil {
+				return fmt.Errorf("session %s has no refresh method — cannot refresh", sess.UUID[:8])
+			}
+
+			if *sess.RefreshMethod != "assume_role" {
+				return fmt.Errorf("unsupported refresh method: %s", *sess.RefreshMethod)
+			}
+
+			// Look up identity for the role ARN
+			broker := identity.NewBroker(engine.MetadataDB, engine.Vault, engine.AuditLogger, engine.Workspace.UUID)
+			id, err := broker.GetIdentity(sess.IdentityUUID)
+			if err != nil {
+				return fmt.Errorf("looking up identity: %w", err)
+			}
+
+			roleARN := id.PrincipalARN
+			if roleARN == "" {
+				return fmt.Errorf("identity %s has no principal ARN for role assumption", id.UUID[:8])
+			}
+
+			// Retrieve external_id from vault
+			externalID := ""
+			raw, vaultErr := engine.Vault.Get(id.VaultKeyRef)
+			if vaultErr == nil {
+				var credMap map[string]string
+				if json.Unmarshal(raw, &credMap) == nil {
+					externalID = credMap["external_id"]
+				}
+			}
+
+			// Resolve parent session credentials
+			if sess.ChainParentSessionUUID == nil {
+				return fmt.Errorf("session has no chain parent — cannot refresh")
+			}
+
+			parentCreds, parentSess, err := awsops.ResolveSessionCredentials(engine, *sess.ChainParentSessionUUID)
+			if err != nil {
+				return fmt.Errorf("resolving parent session credentials: %w", err)
+			}
+
+			factory := awsops.NewClientFactoryWithAudit(engine.Logger, engine.AuditLogger, parentSess.UUID)
+
+			sessionName := sess.SessionName
+			if sessionName == "" {
+				sessionName = "stratus-refresh"
+			}
+
+			fmt.Printf("Refreshing session: %s (%s)\n", sess.SessionName, sess.UUID[:8])
+			fmt.Printf("  Role:   %s\n", roleARN)
+			fmt.Printf("  Parent: %s (%s)\n", parentSess.SessionName, parentSess.UUID[:8])
+			fmt.Println()
+
+			result, err := factory.AssumeRole(context.Background(), parentCreds, roleARN, sessionName, externalID, 3600)
+			if err != nil {
+				return fmt.Errorf("refreshing credentials: %w", err)
+			}
+
+			// Import the refreshed credentials as a new session
+			expiry := result.Expiration
+			_, newSess, err := broker.ImportAssumedRoleSession(identity.AssumedRoleSessionInput{
+				AccessKey:         result.AccessKeyID,
+				SecretKey:         result.SecretAccessKey,
+				SessionToken:     result.SessionToken,
+				Expiry:           &expiry,
+				Label:            sess.SessionName,
+				Region:           sess.Region,
+				RoleARN:          roleARN,
+				ExternalID:       externalID,
+				SourceSessionUUID: *sess.ChainParentSessionUUID,
+			})
+			if err != nil {
+				return fmt.Errorf("importing refreshed session: %w", err)
+			}
+
+			// If the old session was on the context stack, push the new one
+			stack, _ := mgr.Peek()
+			for _, s := range stack {
+				if s.UUID == sess.UUID {
+					mgr.Push(newSess.UUID)
+					break
+				}
+			}
+
+			// Expire the old session
+			mgr.ExpireSession(sess.UUID)
+
+			fmt.Printf("Session refreshed successfully.\n\n")
+			fmt.Printf("  New session: %s (%s)\n", newSess.SessionName, newSess.UUID[:8])
+			if newSess.Expiry != nil {
+				fmt.Printf("  Expiry:      %s (%dm remaining)\n",
+					newSess.Expiry.Format(time.RFC3339),
+					int(time.Until(*newSess.Expiry).Minutes()),
+				)
+			}
+			fmt.Printf("  Old session: %s expired\n", sess.UUID[:8])
 
 			return nil
 		},

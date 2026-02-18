@@ -381,6 +381,115 @@ func (b *Broker) ImportCredProcess(input CredProcessInput) (*core.IdentityRecord
 	return identity, nil
 }
 
+// AssumedRoleSessionInput holds parameters for importing an already-assumed role session.
+type AssumedRoleSessionInput struct {
+	AccessKey         string
+	SecretKey         string
+	SessionToken      string
+	Expiry            *time.Time
+	Label             string
+	Region            string
+	RoleARN           string
+	ExternalID        string
+	SourceSessionUUID string
+}
+
+// ImportAssumedRoleSession imports credentials from a completed STS AssumeRole call.
+// It creates a new identity and session, chained to the source session.
+func (b *Broker) ImportAssumedRoleSession(input AssumedRoleSessionInput) (*core.IdentityRecord, *core.SessionRecord, error) {
+	identityUUID := uuid.New().String()
+	vaultKey := "identity:" + identityUUID
+
+	// Store temporary credentials in vault (include external_id for refresh)
+	secretData, _ := json.Marshal(map[string]string{
+		"access_key":    input.AccessKey,
+		"secret_key":    input.SecretKey,
+		"session_token": input.SessionToken,
+		"external_id":   input.ExternalID,
+	})
+	if err := b.vault.Put(vaultKey, secretData); err != nil {
+		return nil, nil, fmt.Errorf("storing credentials in vault: %w", err)
+	}
+
+	// Extract account ID from role ARN (arn:aws:iam::ACCOUNT:role/Name)
+	accountID := ""
+	parts := splitARN(input.RoleARN)
+	if len(parts) >= 5 {
+		accountID = parts[4]
+	}
+
+	tagsJSON, _ := json.Marshal([]string{"assumed_role"})
+	now := time.Now().UTC()
+
+	identity := &core.IdentityRecord{
+		UUID:          identityUUID,
+		Label:         input.Label,
+		AccountID:     accountID,
+		PrincipalARN:  input.RoleARN,
+		PrincipalType: core.PrincipalAssumedRole,
+		SourceType:    core.SourceAssumeRole,
+		VaultKeyRef:   vaultKey,
+		AcquiredAt:    now,
+		WorkspaceUUID: b.workspaceUUID,
+		Tags:          []string{"assumed_role"},
+		CreatedBy:     "local",
+	}
+
+	_, err := b.db.Exec(
+		`INSERT INTO identities (uuid, label, account_id, principal_arn, principal_type, source_type, vault_key_ref, acquired_at, workspace_uuid, tags, created_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		identity.UUID, identity.Label, identity.AccountID, identity.PrincipalARN,
+		string(identity.PrincipalType), string(identity.SourceType),
+		identity.VaultKeyRef,
+		now.Format(time.RFC3339),
+		b.workspaceUUID,
+		string(tagsJSON),
+		identity.CreatedBy,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("inserting identity: %w", err)
+	}
+
+	region := input.Region
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	refreshMethod := "assume_role"
+	session, err := b.createSession(identityUUID, input.AccessKey, input.Label, region, input.Expiry, &refreshMethod, &input.SourceSessionUUID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating session: %w", err)
+	}
+
+	b.audit.Log(audit.EventSessionActivated, "local", session.UUID, "", map[string]string{
+		"identity_uuid":       identityUUID,
+		"source_type":         string(core.SourceAssumeRole),
+		"role_arn":            input.RoleARN,
+		"source_session_uuid": input.SourceSessionUUID,
+		"label":               input.Label,
+	})
+
+	if err := b.vault.Save(); err != nil {
+		return nil, nil, fmt.Errorf("saving vault: %w", err)
+	}
+
+	return identity, session, nil
+}
+
+// splitARN splits an ARN string by colon delimiter.
+func splitARN(arn string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i < len(arn); i++ {
+		if arn[i] == ':' {
+			parts = append(parts, arn[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, arn[start:])
+	return parts
+}
+
 // ListIdentities returns all non-archived identities in the workspace.
 func (b *Broker) ListIdentities() ([]core.IdentityRecord, error) {
 	rows, err := b.db.Query(

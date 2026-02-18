@@ -6,10 +6,12 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	awsops "github.com/stratus-framework/stratus/internal/aws"
 	"github.com/stratus-framework/stratus/internal/graph"
+	"github.com/stratus-framework/stratus/internal/identity"
 	"github.com/stratus-framework/stratus/internal/session"
 )
 
@@ -30,11 +32,121 @@ func RegisterPivotCommands(root *cobra.Command) {
 	graphCmd.AddCommand(newPivotGraphStatsCmd())
 
 	pivotCmd.AddCommand(graphCmd)
+	pivotCmd.AddCommand(newPivotAssumeCmd())
 	pivotCmd.AddCommand(newPivotHopsCmd())
 	pivotCmd.AddCommand(newPivotPathCmd())
 	pivotCmd.AddCommand(newPivotCanICmd())
 
 	root.AddCommand(pivotCmd)
+}
+
+func newPivotAssumeCmd() *cobra.Command {
+	var (
+		externalID string
+		label      string
+		duration   int32
+	)
+
+	cmd := &cobra.Command{
+		Use:   "assume <role-arn>",
+		Short: "Assume an IAM role and push the new session onto the context stack",
+		Long: `Perform STS AssumeRole using the active session's credentials, then import
+the resulting temporary credentials as a new identity and push the session
+onto the context stack. This is the primary mechanism for lateral movement.
+
+Examples:
+  stratus pivot assume arn:aws:iam::123456789012:role/AdminRole
+  stratus pivot assume arn:aws:iam::123456789012:role/CrossAccount --external-id abc123
+  stratus pivot assume arn:aws:iam::123456789012:role/ShortLived --duration 900 --label prod-admin`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			roleARN := args[0]
+
+			engine, err := loadActiveEngine()
+			if err != nil {
+				return err
+			}
+			defer engine.Close()
+
+			creds, sess, err := awsops.ResolveActiveCredentials(engine)
+			if err != nil {
+				return err
+			}
+
+			factory := awsops.NewClientFactoryWithAudit(engine.Logger, engine.AuditLogger, sess.UUID)
+
+			// Generate STS session name
+			sessionName := "stratus"
+			if label != "" {
+				sessionName = label
+			}
+
+			fmt.Printf("Assuming role: %s\n", roleARN)
+			fmt.Printf("  Source session: %s (%s)\n", sess.SessionName, sess.UUID[:8])
+			fmt.Printf("  Region:         %s\n", sess.Region)
+			if externalID != "" {
+				fmt.Printf("  External ID:    %s\n", externalID)
+			}
+			fmt.Printf("  Duration:       %ds\n", duration)
+			fmt.Println()
+
+			result, err := factory.AssumeRole(context.Background(), creds, roleARN, sessionName, externalID, duration)
+			if err != nil {
+				return err
+			}
+
+			// Derive label if not set
+			if label == "" {
+				label = result.AssumedRoleARN
+			}
+
+			// Import the assumed role credentials
+			broker := identity.NewBroker(engine.MetadataDB, engine.Vault, engine.AuditLogger, engine.Workspace.UUID)
+			expiry := result.Expiration
+			id, newSession, err := broker.ImportAssumedRoleSession(identity.AssumedRoleSessionInput{
+				AccessKey:         result.AccessKeyID,
+				SecretKey:         result.SecretAccessKey,
+				SessionToken:     result.SessionToken,
+				Expiry:           &expiry,
+				Label:            label,
+				Region:           sess.Region,
+				RoleARN:          roleARN,
+				ExternalID:       externalID,
+				SourceSessionUUID: sess.UUID,
+			})
+			if err != nil {
+				return fmt.Errorf("importing assumed role session: %w", err)
+			}
+
+			// Push the new session onto the context stack
+			mgr := session.NewManager(engine.MetadataDB, engine.AuditLogger, engine.Workspace.UUID)
+			pushed, err := mgr.Push(newSession.UUID)
+			if err != nil {
+				return fmt.Errorf("pushing session to context stack: %w", err)
+			}
+
+			fmt.Printf("Role assumed successfully.\n\n")
+			fmt.Printf("  Identity: %s (%s)\n", id.Label, id.UUID[:8])
+			fmt.Printf("  Session:  %s (%s)\n", pushed.SessionName, pushed.UUID[:8])
+			fmt.Printf("  Role ARN: %s\n", result.AssumedRoleARN)
+			fmt.Printf("  Region:   %s\n", pushed.Region)
+			if pushed.Expiry != nil {
+				fmt.Printf("  Expiry:   %s (%dm remaining)\n",
+					pushed.Expiry.Format(time.RFC3339),
+					int(time.Until(*pushed.Expiry).Minutes()),
+				)
+			}
+			fmt.Printf("\nSession is now active. Use 'stratus sessions pop' to revert.\n")
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&externalID, "external-id", "", "External ID for cross-account role assumption")
+	cmd.Flags().StringVar(&label, "label", "", "Label for the new session (default: assumed role ARN)")
+	cmd.Flags().Int32Var(&duration, "duration", 3600, "Session duration in seconds (900-43200)")
+
+	return cmd
 }
 
 func newPivotGraphBuildCmd() *cobra.Command {

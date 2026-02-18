@@ -10,8 +10,15 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/rs/zerolog"
 )
@@ -29,32 +36,25 @@ type ClientFactory struct {
 	mu          sync.Mutex
 	rateLimiter *RateLimiter
 	logger      zerolog.Logger
+	cache       *ResponseCache
 }
 
 // NewClientFactory creates a new AWS client factory.
 func NewClientFactory(logger zerolog.Logger) *ClientFactory {
 	return &ClientFactory{
-		rateLimiter: NewRateLimiter(10), // 10 req/s default per service
+		rateLimiter: NewRateLimiter(10),
 		logger:      logger,
+		cache:       NewResponseCache(5 * time.Minute),
 	}
 }
 
-// STSClient creates an STS client for the given credentials.
-func (f *ClientFactory) STSClient(creds SessionCredentials) *sts.Client {
-	cfg := f.awsConfig(creds)
-	return sts.NewFromConfig(cfg)
-}
-
-// IAMClient creates an IAM client for the given credentials.
-func (f *ClientFactory) IAMClient(creds SessionCredentials) *iam.Client {
-	cfg := f.awsConfig(creds)
-	return iam.NewFromConfig(cfg)
-}
-
-// S3Client creates an S3 client for the given credentials.
-func (f *ClientFactory) S3Client(creds SessionCredentials) *s3.Client {
-	cfg := f.awsConfig(creds)
-	return s3.NewFromConfig(cfg)
+// NewClientFactoryWithRate creates a factory with a custom rate limit.
+func NewClientFactoryWithRate(logger zerolog.Logger, ratePerSec int, cacheTTL time.Duration) *ClientFactory {
+	return &ClientFactory{
+		rateLimiter: NewRateLimiter(ratePerSec),
+		logger:      logger,
+		cache:       NewResponseCache(cacheTTL),
+	}
 }
 
 func (f *ClientFactory) awsConfig(creds SessionCredentials) aws.Config {
@@ -69,27 +69,87 @@ func (f *ClientFactory) awsConfig(creds SessionCredentials) aws.Config {
 	}
 }
 
-// GetCallerIdentity performs sts:GetCallerIdentity and returns ARN, account, user ID.
+// Cache returns the response cache for manual invalidation.
+func (f *ClientFactory) Cache() *ResponseCache { return f.cache }
+
+// --- Service client factories ---
+
+func (f *ClientFactory) STSClient(creds SessionCredentials) *sts.Client {
+	return sts.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) IAMClient(creds SessionCredentials) *iam.Client {
+	return iam.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) S3Client(creds SessionCredentials) *s3.Client {
+	return s3.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) EC2Client(creds SessionCredentials) *ec2.Client {
+	return ec2.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) LambdaClient(creds SessionCredentials) *lambda.Client {
+	return lambda.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) CloudTrailClient(creds SessionCredentials) *cloudtrail.Client {
+	return cloudtrail.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) KMSClient(creds SessionCredentials) *kms.Client {
+	return kms.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) CloudWatchLogsClient(creds SessionCredentials) *cloudwatchlogs.Client {
+	return cloudwatchlogs.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) SecretsManagerClient(creds SessionCredentials) *secretsmanager.Client {
+	return secretsmanager.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) SSMClient(creds SessionCredentials) *ssm.Client {
+	return ssm.NewFromConfig(f.awsConfig(creds))
+}
+
+// EC2ClientForRegion creates an EC2 client overriding the session region.
+func (f *ClientFactory) EC2ClientForRegion(creds SessionCredentials, region string) *ec2.Client {
+	c := creds
+	c.Region = region
+	return ec2.NewFromConfig(f.awsConfig(c))
+}
+
+// --- Convenience operations ---
+
+// GetCallerIdentity performs sts:GetCallerIdentity.
 func (f *ClientFactory) GetCallerIdentity(ctx context.Context, creds SessionCredentials) (arn, account, userID string, err error) {
 	f.rateLimiter.Wait("sts")
+	f.logger.Debug().Str("service", "sts").Str("operation", "GetCallerIdentity").Msg("aws api call")
 
 	client := f.STSClient(creds)
 	result, err := client.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
 		return "", "", "", fmt.Errorf("GetCallerIdentity: %w", err)
 	}
-
 	return aws.ToString(result.Arn), aws.ToString(result.Account), aws.ToString(result.UserId), nil
 }
 
-// RateLimiter implements a per-service token bucket rate limiter.
-type RateLimiter struct {
-	mu          sync.Mutex
-	ratePerSec  int
-	lastCall    map[string]time.Time
+// WaitForService blocks until the rate limit allows a call.
+func (f *ClientFactory) WaitForService(service string) {
+	f.rateLimiter.Wait(service)
+	f.logger.Debug().Str("service", service).Msg("rate limit cleared")
 }
 
-// NewRateLimiter creates a rate limiter with the given requests per second.
+// --- Rate Limiter ---
+
+type RateLimiter struct {
+	mu         sync.Mutex
+	ratePerSec int
+	lastCall   map[string]time.Time
+}
+
 func NewRateLimiter(ratePerSec int) *RateLimiter {
 	return &RateLimiter{
 		ratePerSec: ratePerSec,
@@ -97,7 +157,6 @@ func NewRateLimiter(ratePerSec int) *RateLimiter {
 	}
 }
 
-// Wait blocks until the rate limit allows a call to the given service.
 func (rl *RateLimiter) Wait(service string) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -111,4 +170,62 @@ func (rl *RateLimiter) Wait(service string) {
 		}
 	}
 	rl.lastCall[service] = time.Now()
+}
+
+// --- Response Cache ---
+
+type cacheEntry struct {
+	data      any
+	expiresAt time.Time
+}
+
+// ResponseCache provides in-memory TTL caching for read-only AWS responses.
+type ResponseCache struct {
+	mu      sync.RWMutex
+	entries map[string]*cacheEntry
+	ttl     time.Duration
+}
+
+func NewResponseCache(ttl time.Duration) *ResponseCache {
+	return &ResponseCache{
+		entries: make(map[string]*cacheEntry),
+		ttl:     ttl,
+	}
+}
+
+// Get retrieves a cached value. Returns nil and false if not found or expired.
+func (c *ResponseCache) Get(key string) (any, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, ok := c.entries[key]
+	if !ok || time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	return entry.data, true
+}
+
+// Put stores a value in the cache.
+func (c *ResponseCache) Put(key string, data any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = &cacheEntry{data: data, expiresAt: time.Now().Add(c.ttl)}
+}
+
+// Clear removes all entries, optionally filtering by key prefix.
+func (c *ResponseCache) Clear(prefix string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	count := 0
+	if prefix == "" {
+		count = len(c.entries)
+		c.entries = make(map[string]*cacheEntry)
+	} else {
+		for k := range c.entries {
+			if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+				delete(c.entries, k)
+				count++
+			}
+		}
+	}
+	return count
 }

@@ -35,6 +35,8 @@ For authorized engagements only.`,
 	cli.RegisterArtifactCommands(rootCmd)
 	cli.RegisterNoteCommands(rootCmd)
 	cli.RegisterExportCommands(rootCmd)
+	cli.RegisterAWSCommands(rootCmd)
+	cli.RegisterAWSRawCommands(rootCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

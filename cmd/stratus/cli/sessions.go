@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	awsops "github.com/stratus-framework/stratus/internal/aws"
+	"github.com/stratus-framework/stratus/internal/core"
 	"github.com/stratus-framework/stratus/internal/identity"
 	"github.com/stratus-framework/stratus/internal/session"
 )
@@ -224,9 +225,11 @@ func newSessionPeekCmd() *cobra.Command {
 }
 
 func newSessionWhoamiCmd() *cobra.Command {
-	return &cobra.Command{
+	var skipVerify bool
+
+	cmd := &cobra.Command{
 		Use:   "whoami",
-		Short: "Show the current session's caller identity",
+		Short: "Show the current session's caller identity (with live STS verification)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			engine, err := loadActiveEngine()
 			if err != nil {
@@ -243,11 +246,39 @@ func newSessionWhoamiCmd() *cobra.Command {
 			fmt.Printf("Session:      %s (%s)\n", s.SessionName, s.UUID[:8])
 			fmt.Printf("Access Key:   %s\n", s.AWSAccessKeyID)
 			fmt.Printf("Region:       %s\n", s.Region)
-			fmt.Printf("Health:       %s\n", s.HealthStatus)
+
+			if !skipVerify {
+				// Live STS verification
+				creds, _, credErr := awsops.ResolveActiveCredentials(engine)
+				if credErr != nil {
+					fmt.Printf("Health:       %s (could not resolve credentials: %s)\n", s.HealthStatus, credErr)
+				} else {
+					factory := awsops.NewClientFactory(engine.Logger)
+					arn, account, userID, stsErr := factory.GetCallerIdentity(context.Background(), creds)
+					if stsErr != nil {
+						mgr.UpdateHealth(s.UUID, core.HealthError)
+						fmt.Printf("Health:       error (STS verification failed)\n")
+						fmt.Printf("  Error:      %s\n", stsErr)
+					} else {
+						mgr.UpdateHealth(s.UUID, core.HealthHealthy)
+						fmt.Printf("Health:       healthy (verified)\n")
+						fmt.Printf("  ARN:        %s\n", arn)
+						fmt.Printf("  Account:    %s\n", account)
+						fmt.Printf("  User ID:    %s\n", userID)
+					}
+				}
+			} else {
+				fmt.Printf("Health:       %s (cached, --no-verify)\n", s.HealthStatus)
+			}
+
 			if s.Expiry != nil {
 				remaining := time.Until(*s.Expiry)
-				fmt.Printf("Expiry:       %s (%dm remaining)\n",
-					s.Expiry.Format(time.RFC3339), int(remaining.Minutes()))
+				if remaining <= 0 {
+					fmt.Printf("Expiry:       EXPIRED (%s)\n", s.Expiry.Format(time.RFC3339))
+				} else {
+					fmt.Printf("Expiry:       %s (%dm remaining)\n",
+						s.Expiry.Format(time.RFC3339), int(remaining.Minutes()))
+				}
 			} else {
 				fmt.Printf("Expiry:       (none — long-lived key)\n")
 			}
@@ -261,6 +292,10 @@ func newSessionWhoamiCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&skipVerify, "no-verify", false, "Skip live STS verification and show cached data only")
+
+	return cmd
 }
 
 func newSessionHealthCmd() *cobra.Command {

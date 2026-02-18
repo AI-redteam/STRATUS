@@ -14,10 +14,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"github.com/stratus-framework/stratus/internal/artifact"
 	"github.com/stratus-framework/stratus/internal/audit"
 	stratusaws "github.com/stratus-framework/stratus/internal/aws"
 	"github.com/stratus-framework/stratus/internal/core"
 	"github.com/stratus-framework/stratus/internal/graph"
+	"github.com/stratus-framework/stratus/internal/scope"
 	sdk "github.com/stratus-framework/stratus/pkg/sdk/v1"
 )
 
@@ -126,13 +128,26 @@ func matchesFilter(meta sdk.ModuleMeta, keyword, service, riskClass, tag string)
 
 // Runner executes modules and records their results.
 type Runner struct {
-	registry  *Registry
-	db        *sql.DB
-	audit     *audit.Logger
-	factory   *stratusaws.ClientFactory
-	graphStore *graph.Store
-	logger    zerolog.Logger
-	workspace string
+	registry       *Registry
+	db             *sql.DB
+	audit          *audit.Logger
+	factory        *stratusaws.ClientFactory
+	graphStore     *graph.Store
+	logger         zerolog.Logger
+	workspace      string
+	scopeChecker   *scope.Checker
+	artifactStore  *artifact.Store
+}
+
+// SetScope enables scope enforcement on the runner.
+// When set, Execute() will reject operations targeting out-of-scope regions or accounts.
+func (r *Runner) SetScope(checker *scope.Checker) {
+	r.scopeChecker = checker
+}
+
+// SetArtifactStore enables automatic artifact storage for module outputs.
+func (r *Runner) SetArtifactStore(store *artifact.Store) {
+	r.artifactStore = store
 }
 
 // NewRunner creates a module execution runner.
@@ -160,6 +175,18 @@ type RunConfig struct {
 
 // Execute runs a module and records the result.
 func (r *Runner) Execute(ctx context.Context, cfg RunConfig) (*core.ModuleRun, error) {
+	// Scope enforcement: block out-of-scope operations before execution
+	if r.scopeChecker != nil {
+		if err := r.scopeChecker.CheckRegion(cfg.Creds.Region); err != nil {
+			r.audit.Log(audit.EventScopeViolation, cfg.Operator, cfg.Session.UUID, "", map[string]string{
+				"module_id": cfg.ModuleID,
+				"region":    cfg.Creds.Region,
+				"violation": err.Error(),
+			})
+			return nil, fmt.Errorf("scope violation: %w", err)
+		}
+	}
+
 	mod, ok := r.registry.Get(cfg.ModuleID)
 	if !ok {
 		return nil, fmt.Errorf("module not found: %s", cfg.ModuleID)
@@ -268,6 +295,25 @@ func (r *Runner) Execute(ctx context.Context, cfg RunConfig) (*core.ModuleRun, e
 	} else {
 		run.Status = core.RunSuccess
 		run.Outputs = result.Outputs
+
+		// Store outputs as artifact
+		if r.artifactStore != nil && len(result.Outputs) > 0 {
+			outputJSON, _ := json.MarshalIndent(result.Outputs, "", "  ")
+			art, artErr := r.artifactStore.Create(artifact.CreateInput{
+				RunUUID:      &runID,
+				SessionUUID:  cfg.Session.UUID,
+				ArtifactType: core.ArtifactJSONResult,
+				Label:        fmt.Sprintf("%s output", meta.ID),
+				Content:      outputJSON,
+				CreatedBy:    cfg.Operator,
+				Tags:         []string{"auto", meta.ID},
+			})
+			if artErr != nil {
+				r.logger.Warn().Err(artErr).Str("run", runID).Msg("failed to store output artifact")
+			} else {
+				run.ArtifactUUIDs = append(run.ArtifactUUIDs, art.UUID)
+			}
+		}
 	}
 
 	r.updateRun(run)
@@ -381,6 +427,7 @@ func (r *Runner) saveRun(run *core.ModuleRun) error {
 
 func (r *Runner) updateRun(run *core.ModuleRun) {
 	outputsJSON, _ := json.Marshal(run.Outputs)
+	artifactJSON, _ := json.Marshal(run.ArtifactUUIDs)
 
 	var completedStr *string
 	if run.CompletedAt != nil {
@@ -389,9 +436,9 @@ func (r *Runner) updateRun(run *core.ModuleRun) {
 	}
 
 	r.db.Exec(
-		`UPDATE module_runs SET status = ?, completed_at = ?, outputs = ?, error_detail = ?
+		`UPDATE module_runs SET status = ?, completed_at = ?, outputs = ?, error_detail = ?, artifact_uuids = ?
 		 WHERE uuid = ?`,
-		string(run.Status), completedStr, string(outputsJSON), run.ErrorDetail, run.UUID,
+		string(run.Status), completedStr, string(outputsJSON), run.ErrorDetail, string(artifactJSON), run.UUID,
 	)
 }
 

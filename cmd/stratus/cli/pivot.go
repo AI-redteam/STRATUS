@@ -12,6 +12,7 @@ import (
 	awsops "github.com/stratus-framework/stratus/internal/aws"
 	"github.com/stratus-framework/stratus/internal/graph"
 	"github.com/stratus-framework/stratus/internal/identity"
+	"github.com/stratus-framework/stratus/internal/scope"
 	"github.com/stratus-framework/stratus/internal/session"
 )
 
@@ -71,6 +72,15 @@ Examples:
 			creds, sess, err := awsops.ResolveActiveCredentials(engine)
 			if err != nil {
 				return err
+			}
+
+			// Enforce workspace scope
+			checker := scope.NewChecker(engine.Workspace.ScopeConfig)
+			if err := checker.CheckRegion(creds.Region); err != nil {
+				return fmt.Errorf("scope violation: %w", err)
+			}
+			if err := checker.CheckARN(roleARN); err != nil {
+				return fmt.Errorf("scope violation: target role is out of scope: %w", err)
 			}
 
 			factory := awsops.NewClientFactoryWithAudit(engine.Logger, engine.AuditLogger, sess.UUID)
@@ -168,6 +178,12 @@ permission relationships. Results populate the workspace pivot graph.`,
 			creds, sess, err := awsops.ResolveActiveCredentials(engine)
 			if err != nil {
 				return err
+			}
+
+			// Enforce workspace scope
+			checker := scope.NewChecker(engine.Workspace.ScopeConfig)
+			if err := checker.CheckRegion(creds.Region); err != nil {
+				return fmt.Errorf("scope violation: %w", err)
 			}
 
 			factory := awsops.NewClientFactoryWithAudit(engine.Logger, engine.AuditLogger, sess.UUID)

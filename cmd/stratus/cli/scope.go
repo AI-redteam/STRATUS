@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/stratus-framework/stratus/internal/scope"
 )
 
 // RegisterScopeCommands adds scope management commands.
@@ -18,6 +19,7 @@ func RegisterScopeCommands(root *cobra.Command) {
 
 	scopeCmd.AddCommand(newScopeShowCmd())
 	scopeCmd.AddCommand(newScopeUpdateCmd())
+	scopeCmd.AddCommand(newScopeCheckCmd())
 
 	root.AddCommand(scopeCmd)
 }
@@ -130,6 +132,68 @@ func newScopeUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&addAccounts, "add-accounts", "", "Comma-separated account IDs to add")
 	cmd.Flags().StringVar(&addRegions, "add-regions", "", "Comma-separated regions to add")
 	cmd.Flags().StringVar(&setPartition, "set-partition", "", "Set AWS partition")
+
+	return cmd
+}
+
+func newScopeCheckCmd() *cobra.Command {
+	var (
+		region    string
+		accountID string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "Check if a region or account is in scope",
+		Long: `Validate whether a given region or account ID falls within the workspace scope.
+Useful for pre-checking before operations.
+
+Examples:
+  stratus scope check --region us-east-1
+  stratus scope check --account 123456789012
+  stratus scope check --region eu-west-1 --account 123456789012`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if region == "" && accountID == "" {
+				return fmt.Errorf("at least one of --region or --account is required")
+			}
+
+			engine, err := loadActiveEngine()
+			if err != nil {
+				return err
+			}
+			defer engine.Close()
+
+			checker := scope.NewChecker(engine.Workspace.ScopeConfig)
+			allOK := true
+
+			if region != "" {
+				if err := checker.CheckRegion(region); err != nil {
+					fmt.Printf("Region %s: OUT OF SCOPE (%s)\n", region, err)
+					allOK = false
+				} else {
+					fmt.Printf("Region %s: in scope\n", region)
+				}
+			}
+
+			if accountID != "" {
+				if err := checker.CheckAccount(accountID); err != nil {
+					fmt.Printf("Account %s: OUT OF SCOPE (%s)\n", accountID, err)
+					allOK = false
+				} else {
+					fmt.Printf("Account %s: in scope\n", accountID)
+				}
+			}
+
+			if !allOK {
+				return fmt.Errorf("scope check failed")
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&region, "region", "", "AWS region to check")
+	cmd.Flags().StringVar(&accountID, "account", "", "AWS account ID to check")
 
 	return cmd
 }

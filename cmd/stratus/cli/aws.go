@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	awsops "github.com/stratus-framework/stratus/internal/aws"
+	"github.com/stratus-framework/stratus/internal/scope"
 )
 
 // RegisterAWSCommands adds the `stratus aws` service command tree.
@@ -50,6 +51,17 @@ func awsClientSetup() (*awsops.ClientFactory, awsops.SessionCredentials, func(),
 	if err != nil {
 		cleanup()
 		return nil, awsops.SessionCredentials{}, nil, err
+	}
+
+	// Enforce workspace scope on the session region
+	checker := scope.NewChecker(engine.Workspace.ScopeConfig)
+	if err := checker.CheckRegion(creds.Region); err != nil {
+		engine.AuditLogger.Log("scope_violation", "local", sess.UUID, "", map[string]string{
+			"region":    creds.Region,
+			"violation": err.Error(),
+		})
+		cleanup()
+		return nil, awsops.SessionCredentials{}, nil, fmt.Errorf("scope violation: %w", err)
 	}
 
 	factory := awsops.NewClientFactoryWithAudit(engine.Logger, engine.AuditLogger, sess.UUID)

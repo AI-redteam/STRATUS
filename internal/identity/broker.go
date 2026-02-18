@@ -79,10 +79,17 @@ type CredProcessInput struct {
 }
 
 // IMDSCaptureInput holds parameters for IMDS snapshot import.
+// The JSON data should contain at minimum: AccessKeyId, SecretAccessKey, Token.
+// Optionally: Expiration (RFC3339), Code, Type.
 type IMDSCaptureInput struct {
-	FilePath string
-	Label    string
-	Tags     []string
+	AccessKey    string
+	SecretKey    string
+	SessionToken string
+	Expiry       *time.Time
+	RoleName     string // From the IMDS iam/security-credentials/<role> endpoint
+	Label        string
+	Region       string
+	Tags         []string
 }
 
 // ImportIAMKey imports a long-lived IAM access key pair.
@@ -379,6 +386,87 @@ func (b *Broker) ImportCredProcess(input CredProcessInput) (*core.IdentityRecord
 	}
 
 	return identity, nil
+}
+
+// ImportIMDSCapture imports credentials captured from an EC2 instance metadata service.
+func (b *Broker) ImportIMDSCapture(input IMDSCaptureInput) (*core.IdentityRecord, *core.SessionRecord, error) {
+	identityUUID := uuid.New().String()
+	vaultKey := "identity:" + identityUUID
+
+	secretData, _ := json.Marshal(map[string]string{
+		"access_key":    input.AccessKey,
+		"secret_key":    input.SecretKey,
+		"session_token": input.SessionToken,
+	})
+	if err := b.vault.Put(vaultKey, secretData); err != nil {
+		return nil, nil, fmt.Errorf("storing IMDS credentials in vault: %w", err)
+	}
+
+	tags := input.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	tags = append(tags, "imds_capture")
+	tagsJSON, _ := json.Marshal(tags)
+	now := time.Now().UTC()
+
+	label := input.Label
+	if label == "" && input.RoleName != "" {
+		label = "imds-" + input.RoleName
+	}
+	if label == "" {
+		label = "imds-capture"
+	}
+
+	identity := &core.IdentityRecord{
+		UUID:          identityUUID,
+		Label:         label,
+		PrincipalType: core.PrincipalAssumedRole,
+		SourceType:    core.SourceIMDSCapture,
+		VaultKeyRef:   vaultKey,
+		AcquiredAt:    now,
+		WorkspaceUUID: b.workspaceUUID,
+		Tags:          tags,
+		CreatedBy:     "local",
+	}
+
+	_, err := b.db.Exec(
+		`INSERT INTO identities (uuid, label, account_id, principal_arn, principal_type, source_type, vault_key_ref, acquired_at, workspace_uuid, tags, created_by)
+		 VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)`,
+		identity.UUID, identity.Label,
+		string(identity.PrincipalType), string(identity.SourceType),
+		identity.VaultKeyRef,
+		now.Format(time.RFC3339),
+		b.workspaceUUID,
+		string(tagsJSON),
+		identity.CreatedBy,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("inserting identity: %w", err)
+	}
+
+	region := input.Region
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	session, err := b.createSession(identityUUID, input.AccessKey, label, region, input.Expiry, nil, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating session: %w", err)
+	}
+
+	b.audit.Log(audit.EventIdentityImported, "local", session.UUID, "", map[string]string{
+		"identity_uuid": identityUUID,
+		"source_type":   string(core.SourceIMDSCapture),
+		"label":         label,
+		"role_name":     input.RoleName,
+	})
+
+	if err := b.vault.Save(); err != nil {
+		return nil, nil, fmt.Errorf("saving vault: %w", err)
+	}
+
+	return identity, session, nil
 }
 
 // AssumedRoleSessionInput holds parameters for importing an already-assumed role session.

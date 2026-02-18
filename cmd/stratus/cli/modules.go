@@ -9,9 +9,11 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"github.com/stratus-framework/stratus/internal/artifact"
 	awsops "github.com/stratus-framework/stratus/internal/aws"
 	"github.com/stratus-framework/stratus/internal/graph"
 	"github.com/stratus-framework/stratus/internal/module"
+	"github.com/stratus-framework/stratus/internal/scope"
 )
 
 // RegisterModuleCommands adds module management and execution commands.
@@ -256,6 +258,8 @@ Examples:
 			}
 
 			runner := module.NewRunner(reg, engine.MetadataDB, engine.AuditLogger, factory, gs, engine.Logger, engine.Workspace.UUID)
+			runner.SetScope(scope.NewChecker(engine.Workspace.ScopeConfig))
+			runner.SetArtifactStore(artifact.NewStore(engine.MetadataDB, engine.Workspace.Path, engine.Workspace.UUID))
 
 			cfg := module.RunConfig{
 				ModuleID: moduleID,

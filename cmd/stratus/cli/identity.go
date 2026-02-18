@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -48,6 +49,7 @@ Supported types:
 	addCmd.AddCommand(newIdentityAddAssumeRoleCmd())
 	addCmd.AddCommand(newIdentityAddWebIdentityCmd())
 	addCmd.AddCommand(newIdentityAddCredProcessCmd())
+	addCmd.AddCommand(newIdentityAddIMDSCaptureCmd())
 
 	return addCmd
 }
@@ -354,6 +356,120 @@ func newIdentityAddCredProcessCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&command, "command", "", "Shell command for credential_process")
 	cmd.Flags().StringVar(&label, "label", "", "Human-readable label")
+
+	return cmd
+}
+
+func newIdentityAddIMDSCaptureCmd() *cobra.Command {
+	var (
+		accessKey    string
+		secretKey    string
+		sessionToken string
+		expiry       string
+		roleName     string
+		label        string
+		region       string
+		jsonFile     string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "imds-capture",
+		Short: "Import credentials captured from EC2 Instance Metadata Service",
+		Long: `Import AWS credentials obtained from an EC2 instance's metadata service (IMDS).
+
+You can provide credentials either as individual flags or as a JSON file (--json-file)
+containing the IMDS response from http://169.254.169.254/latest/meta-data/iam/security-credentials/<role>.
+
+JSON file format:
+  {
+    "AccessKeyId": "ASIA...",
+    "SecretAccessKey": "...",
+    "Token": "...",
+    "Expiration": "2024-01-01T00:00:00Z"
+  }`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			engine, err := loadActiveEngine()
+			if err != nil {
+				return err
+			}
+			defer engine.Close()
+
+			// If JSON file provided, parse it
+			if jsonFile != "" {
+				data, err := os.ReadFile(jsonFile)
+				if err != nil {
+					return fmt.Errorf("reading JSON file: %w", err)
+				}
+
+				var imdsResp struct {
+					AccessKeyID     string `json:"AccessKeyId"`
+					SecretAccessKey string `json:"SecretAccessKey"`
+					Token           string `json:"Token"`
+					Expiration      string `json:"Expiration"`
+					Code            string `json:"Code"`
+					Type            string `json:"Type"`
+				}
+				if err := json.Unmarshal(data, &imdsResp); err != nil {
+					return fmt.Errorf("parsing IMDS JSON: %w", err)
+				}
+
+				accessKey = imdsResp.AccessKeyID
+				secretKey = imdsResp.SecretAccessKey
+				sessionToken = imdsResp.Token
+				if imdsResp.Expiration != "" {
+					expiry = imdsResp.Expiration
+				}
+			}
+
+			if accessKey == "" || secretKey == "" || sessionToken == "" {
+				return fmt.Errorf("--access-key, --secret-key, and --session-token are required (or use --json-file)")
+			}
+
+			var expiryTime *time.Time
+			if expiry != "" {
+				t, err := time.Parse(time.RFC3339, expiry)
+				if err != nil {
+					return fmt.Errorf("invalid expiry format (expected RFC3339): %w", err)
+				}
+				expiryTime = &t
+			}
+
+			broker := identity.NewBroker(engine.MetadataDB, engine.Vault, engine.AuditLogger, engine.Workspace.UUID)
+
+			id, session, err := broker.ImportIMDSCapture(identity.IMDSCaptureInput{
+				AccessKey:    accessKey,
+				SecretKey:    secretKey,
+				SessionToken: sessionToken,
+				Expiry:       expiryTime,
+				RoleName:     roleName,
+				Label:        label,
+				Region:       region,
+			})
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("IMDS capture imported successfully.\n")
+			fmt.Printf("  Identity UUID: %s\n", id.UUID)
+			fmt.Printf("  Label:         %s\n", id.Label)
+			fmt.Printf("  Session UUID:  %s\n", session.UUID)
+			if expiryTime != nil {
+				fmt.Printf("  Expires:       %s\n", expiryTime.Format(time.RFC3339))
+			}
+			fmt.Println("\nUse 'stratus sessions use " + session.UUID[:8] + "' to activate this session.")
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&jsonFile, "json-file", "", "Path to IMDS JSON response file")
+	cmd.Flags().StringVar(&accessKey, "access-key", "", "AWS access key ID")
+	cmd.Flags().StringVar(&secretKey, "secret-key", "", "AWS secret access key")
+	cmd.Flags().StringVar(&sessionToken, "session-token", "", "AWS session token")
+	cmd.Flags().StringVar(&expiry, "expiry", "", "Credential expiry (RFC3339 format)")
+	cmd.Flags().StringVar(&roleName, "role-name", "", "EC2 instance role name")
+	cmd.Flags().StringVar(&label, "label", "", "Human-readable label")
+	cmd.Flags().StringVar(&region, "region", "us-east-1", "Default AWS region")
 
 	return cmd
 }

@@ -954,3 +954,105 @@ func extractSourceIP(rawEvent *string) string {
 	}
 	return ""
 }
+
+// ---- Write operations (no caching) ----
+
+// CreateAccessKeyResult holds the output of iam:CreateAccessKey.
+type CreateAccessKeyResult struct {
+	AccessKeyID string `json:"access_key_id"`
+	Status      string `json:"status"`
+	UserName    string `json:"user_name"`
+	CreateDate  string `json:"create_date"`
+}
+
+// CreateAccessKey creates a new IAM access key for the specified user.
+// The SecretAccessKey is intentionally NOT included in the result struct for security.
+func (f *ClientFactory) CreateAccessKey(ctx context.Context, creds SessionCredentials, userName string) (*CreateAccessKeyResult, string, error) {
+	f.rateLimiter.Wait("iam")
+	f.logAPICall("iam", "CreateAccessKey", map[string]string{"user": userName}, nil)
+
+	client := f.IAMClient(creds)
+	out, err := client.CreateAccessKey(ctx, &iam.CreateAccessKeyInput{
+		UserName: &userName,
+	})
+	if err != nil {
+		f.logAPICall("iam", "CreateAccessKey", map[string]string{"user": userName}, err)
+		return nil, "", fmt.Errorf("CreateAccessKey(%s): %w", userName, err)
+	}
+
+	result := &CreateAccessKeyResult{
+		AccessKeyID: aws.ToString(out.AccessKey.AccessKeyId),
+		Status:      string(out.AccessKey.Status),
+		UserName:    aws.ToString(out.AccessKey.UserName),
+		CreateDate:  out.AccessKey.CreateDate.Format("2006-01-02 15:04:05"),
+	}
+	secretKey := aws.ToString(out.AccessKey.SecretAccessKey)
+
+	return result, secretKey, nil
+}
+
+// StopTrail disables logging on a CloudTrail trail.
+func (f *ClientFactory) StopTrail(ctx context.Context, creds SessionCredentials, trailName string) error {
+	f.rateLimiter.Wait("cloudtrail")
+	f.logAPICall("cloudtrail", "StopLogging", map[string]string{"trail": trailName}, nil)
+
+	client := f.CloudTrailClient(creds)
+	_, err := client.StopLogging(ctx, &cloudtrail.StopLoggingInput{
+		Name: &trailName,
+	})
+	if err != nil {
+		f.logAPICall("cloudtrail", "StopLogging", map[string]string{"trail": trailName}, err)
+		return fmt.Errorf("StopLogging(%s): %w", trailName, err)
+	}
+
+	return nil
+}
+
+// AuthorizeSecurityGroupIngressResult holds the output of ec2:AuthorizeSecurityGroupIngress.
+type AuthorizeSecurityGroupIngressResult struct {
+	GroupID  string `json:"group_id"`
+	Protocol string `json:"protocol"`
+	FromPort int32  `json:"from_port"`
+	ToPort   int32  `json:"to_port"`
+	CidrIP   string `json:"cidr_ip"`
+}
+
+// AuthorizeSecurityGroupIngress adds an ingress rule to a security group.
+func (f *ClientFactory) AuthorizeSecurityGroupIngress(ctx context.Context, creds SessionCredentials, groupID, protocol, cidrIP string, fromPort, toPort int32) (*AuthorizeSecurityGroupIngressResult, error) {
+	f.rateLimiter.Wait("ec2")
+	f.logAPICall("ec2", "AuthorizeSecurityGroupIngress", map[string]string{
+		"group_id": groupID,
+		"protocol": protocol,
+		"cidr_ip":  cidrIP,
+	}, nil)
+
+	client := f.EC2Client(creds)
+	_, err := client.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: &groupID,
+		IpPermissions: []ec2types.IpPermission{
+			{
+				IpProtocol: &protocol,
+				FromPort:   &fromPort,
+				ToPort:     &toPort,
+				IpRanges: []ec2types.IpRange{
+					{CidrIp: &cidrIP},
+				},
+			},
+		},
+	})
+	if err != nil {
+		f.logAPICall("ec2", "AuthorizeSecurityGroupIngress", map[string]string{"group_id": groupID}, err)
+		return nil, fmt.Errorf("AuthorizeSecurityGroupIngress(%s): %w", groupID, err)
+	}
+
+	// Invalidate cached security group data
+	f.cache.Clear("ec2:sgs:")
+
+	return &AuthorizeSecurityGroupIngressResult{
+		GroupID:  groupID,
+		Protocol: protocol,
+		FromPort: fromPort,
+		ToPort:   toPort,
+		CidrIP:   cidrIP,
+	}, nil
+}

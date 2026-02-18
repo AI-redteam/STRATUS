@@ -41,3 +41,9 @@ workspaces/
 plugins/*.so
 plugins/*.dylib
 plugins/*.dll
+
+# Wails / GUI
+cmd/stratus-gui/build/
+cmd/stratus-gui/frontend/node_modules/
+cmd/stratus-gui/frontend/dist/
+cmd/stratus-gui/frontend/wailsjs/

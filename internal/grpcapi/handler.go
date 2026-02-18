@@ -68,6 +68,20 @@ func NewHandler(svc *Service) *Handler {
 
 		// Audit
 		"audit.verify": h.handleVerifyAudit,
+		"audit.list":   h.handleListAuditEvents,
+
+		// Graph snapshot
+		"graph.snapshot": h.handleGetGraphSnapshot,
+
+		// Scope
+		"scope.info": h.handleGetScopeInfo,
+
+		// Notes
+		"note.list":   h.handleListNotes,
+		"note.get":    h.handleGetNote,
+		"note.add":    h.handleAddNote,
+		"note.update": h.handleUpdateNote,
+		"note.delete": h.handleDeleteNote,
 	}
 	return h
 }
@@ -271,4 +285,77 @@ func (h *Handler) handleVerifyAudit(_ context.Context, _ json.RawMessage) (any, 
 		"valid": valid,
 		"count": count,
 	}, nil
+}
+
+type auditListParams struct {
+	Limit     int    `json:"limit"`
+	Offset    int    `json:"offset"`
+	EventType string `json:"event_type"`
+}
+
+func (h *Handler) handleListAuditEvents(_ context.Context, params json.RawMessage) (any, error) {
+	var p auditListParams
+	if params != nil {
+		json.Unmarshal(params, &p)
+	}
+	return h.service.ListAuditEvents(p.Limit, p.Offset, p.EventType)
+}
+
+func (h *Handler) handleGetGraphSnapshot(_ context.Context, _ json.RawMessage) (any, error) {
+	return h.service.GetGraphSnapshot()
+}
+
+func (h *Handler) handleGetScopeInfo(_ context.Context, _ json.RawMessage) (any, error) {
+	return h.service.GetScopeInfo(), nil
+}
+
+type noteFilterParams struct {
+	Session string `json:"session"`
+	Run     string `json:"run"`
+	Node    string `json:"node"`
+}
+
+func (h *Handler) handleListNotes(_ context.Context, params json.RawMessage) (any, error) {
+	var p noteFilterParams
+	if params != nil {
+		json.Unmarshal(params, &p)
+	}
+	return h.service.ListNotes(p.Session, p.Run, p.Node)
+}
+
+func (h *Handler) handleGetNote(_ context.Context, params json.RawMessage) (any, error) {
+	var p uuidParam
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.GetNote(p.UUID)
+}
+
+func (h *Handler) handleAddNote(_ context.Context, params json.RawMessage) (any, error) {
+	var req AddNoteRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.AddNote(req)
+}
+
+type noteUpdateParams struct {
+	UUID    string `json:"uuid"`
+	Content string `json:"content"`
+}
+
+func (h *Handler) handleUpdateNote(_ context.Context, params json.RawMessage) (any, error) {
+	var p noteUpdateParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return map[string]bool{"success": true}, h.service.UpdateNote(p.UUID, p.Content)
+}
+
+func (h *Handler) handleDeleteNote(_ context.Context, params json.RawMessage) (any, error) {
+	var p uuidParam
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return map[string]bool{"success": true}, h.service.DeleteNote(p.UUID)
 }

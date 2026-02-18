@@ -1,4 +1,4 @@
-.PHONY: all build build-server clean test lint fmt vet
+.PHONY: all build build-server build-gui dev-gui clean test lint fmt vet
 
 VERSION ?= 0.1.0-dev
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -11,8 +11,14 @@ build:
 build-server:
 	go build $(LDFLAGS) -o bin/stratus-server ./cmd/stratus-server
 
+build-gui:
+	cd cmd/stratus-gui && wails build
+
+dev-gui:
+	cd cmd/stratus-gui && wails dev
+
 clean:
-	rm -rf bin/ dist/
+	rm -rf bin/ dist/ cmd/stratus-gui/build/
 
 test:
 	go test -v -race -count=1 ./...

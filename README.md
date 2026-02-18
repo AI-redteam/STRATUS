@@ -12,13 +12,15 @@ STRATUS is an operator-focused framework for authorized AWS security testing and
 - **Storage:** SQLite (metadata + append-only audit log) + encrypted vault (AES-256-GCM, Argon2id KDF)
 - **CLI:** Cobra-based with full command hierarchy
 - **Teamserver:** gRPC with JSON-RPC dispatch for multi-operator collaboration
-- **GUI:** Wails v2 + React/TypeScript + D3.js (planned)
+- **GUI:** Wails v2 + React/TypeScript + D3.js
 
 ## Building
 
 ```bash
 make build          # Build CLI binary
 make build-server   # Build teamserver binary
+make build-gui      # Build GUI (Wails + React)
+make dev-gui        # GUI dev mode with hot reload
 make test           # Run tests
 make build-all      # Cross-compile for all platforms
 ```
@@ -97,6 +99,9 @@ stratus export --format markdown --output ./report/
 | `com.stratus.lambda.enumerate-functions` | Enumerate Lambda Functions | read_only | Lambda |
 | `com.stratus.ec2.enumerate-instances` | Enumerate EC2 Instances | read_only | EC2 |
 | `com.stratus.ec2.security-group-audit` | Security Group Audit | read_only | EC2 |
+| `com.stratus.iam.create-access-key` | Create IAM Access Key | write | IAM |
+| `com.stratus.cloudtrail.stop-trail` | Stop CloudTrail Logging | destructive | CloudTrail |
+| `com.stratus.ec2.modify-security-group` | Modify Security Group | write | EC2 |
 
 ## Teamserver
 
@@ -117,12 +122,35 @@ stratus-server serve --workspace /path/to/workspace --passphrase "$VAULT_PASS" -
 
 The teamserver exposes the full STRATUS API over gRPC with mutual TLS (mTLS) authentication. Each operator connects with a client certificate signed by the engagement CA. Supports workspace, identity, session, graph, module, and audit operations for multi-operator collaboration.
 
+## GUI
+
+The STRATUS GUI provides a full read-only operator console with six views:
+
+- **Dashboard** — Workspace overview, stat cards, scope display, recent runs, audit health
+- **Identities** — Browse imported identities, filter/sort, archive, linked session detail
+- **Sessions** — Session list with LIFO context stack visualization, activate/push/pop/expire
+- **Modules** — Card grid with search/filter, module detail, run dialog with auto-generated inputs
+- **Graph** — D3.js force-directed pivot graph with zoom/pan/drag, path finder, node coloring
+- **Audit** — Append-only audit log with chain verification, event filtering, paginated detail
+
+```bash
+# Prerequisites: Go 1.23+, Node.js 18+, Wails v2
+# Install Wails: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+# Development mode (hot reload)
+make dev-gui
+
+# Production build
+make build-gui
+```
+
 ## Project Structure
 
 ```
 cmd/
   stratus/           CLI binary entrypoint + Cobra commands
   stratus-server/    Teamserver binary
+  stratus-gui/       GUI binary (Wails v2 + React/TypeScript)
 internal/
   core/              Types, workspace manager, engine
   db/                SQLite schema and database management
@@ -133,7 +161,7 @@ internal/
   scope/             Blast radius enforcement (region, account, partition, ARN)
   audit/             Append-only audit log with SHA-256 hash chain
   artifact/          Content-addressed artifact storage with integrity verification
-  module/            Module registry, runner, and 8 built-in modules
+  module/            Module registry, runner, and 11 built-in modules
   pki/               mTLS certificate authority and certificate generation
   logging/           Structured logging with secret redaction
   aws/               AWS SDK v2 adapter (rate limiting, retry, caching, audit)

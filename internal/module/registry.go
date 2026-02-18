@@ -185,6 +185,20 @@ func (r *Runner) Execute(ctx context.Context, cfg RunConfig) (*core.ModuleRun, e
 			})
 			return nil, fmt.Errorf("scope violation: %w", err)
 		}
+
+		// Account scope check: resolve account ID from identity
+		var accountID string
+		r.db.QueryRow("SELECT account_id FROM identities WHERE uuid = ?", cfg.Session.IdentityUUID).Scan(&accountID)
+		if accountID != "" {
+			if err := r.scopeChecker.CheckAccount(accountID); err != nil {
+				r.audit.Log(audit.EventScopeViolation, cfg.Operator, cfg.Session.UUID, "", map[string]string{
+					"module_id":  cfg.ModuleID,
+					"account_id": accountID,
+					"violation":  err.Error(),
+				})
+				return nil, fmt.Errorf("scope violation: %w", err)
+			}
+		}
 	}
 
 	mod, ok := r.registry.Get(cfg.ModuleID)
@@ -251,6 +265,17 @@ func (r *Runner) Execute(ctx context.Context, cfg RunConfig) (*core.ModuleRun, e
 		r.logger.Warn().Strs("missing", preflight.MissingPermissions).Msg("preflight: missing permissions")
 	}
 
+	// Mandatory dry-run for write/destructive modules: log the plan to audit
+	if meta.RiskClass == sdk.RiskWrite || meta.RiskClass == sdk.RiskDestructive {
+		dryResult := mod.DryRun(runCtx)
+		r.audit.Log(audit.EventModuleRun, cfg.Operator, cfg.Session.UUID, runID, map[string]string{
+			"module_id":  meta.ID,
+			"risk_class": meta.RiskClass,
+			"action":     "mandatory_dry_run",
+			"plan":       dryResult.Description,
+		})
+	}
+
 	// Dry run mode
 	if cfg.DryRun {
 		dryResult := mod.DryRun(runCtx)
@@ -271,8 +296,9 @@ func (r *Runner) Execute(ctx context.Context, cfg RunConfig) (*core.ModuleRun, e
 	r.updateRun(run)
 
 	r.audit.Log(audit.EventModuleRun, cfg.Operator, cfg.Session.UUID, runID, map[string]string{
-		"module_id": meta.ID,
-		"action":    "started",
+		"module_id":  meta.ID,
+		"risk_class": meta.RiskClass,
+		"action":     "started",
 	})
 
 	// Create a module-aware context that carries the AWS factory and graph store
@@ -319,9 +345,10 @@ func (r *Runner) Execute(ctx context.Context, cfg RunConfig) (*core.ModuleRun, e
 	r.updateRun(run)
 
 	r.audit.Log(audit.EventModuleRun, cfg.Operator, cfg.Session.UUID, runID, map[string]string{
-		"module_id": meta.ID,
-		"action":    "completed",
-		"status":    string(run.Status),
+		"module_id":  meta.ID,
+		"risk_class": meta.RiskClass,
+		"action":     "completed",
+		"status":     string(run.Status),
 	})
 
 	return run, nil
@@ -504,4 +531,7 @@ func RegisterBuiltinModules(reg *Registry, factory *stratusaws.ClientFactory, gs
 	reg.Register(&EnumerateLambdaModule{factory: factory})
 	reg.Register(&EnumerateEC2Module{factory: factory})
 	reg.Register(&SecurityGroupAuditModule{factory: factory})
+	reg.Register(&CreateAccessKeyModule{factory: factory})
+	reg.Register(&StopTrailModule{factory: factory})
+	reg.Register(&ModifySecurityGroupModule{factory: factory})
 }

@@ -13,6 +13,35 @@ import (
 	"github.com/stratus-framework/stratus/internal/graph"
 )
 
+// exportErrors accumulates non-fatal errors during export so that individual
+// file write or row scan failures don't abort the entire export.
+type exportErrors struct {
+	writeErrors []string
+	scanErrors  []string
+}
+
+func (e *exportErrors) addWriteError(path string, err error) {
+	e.writeErrors = append(e.writeErrors, fmt.Sprintf("%s: %s", path, err))
+}
+
+func (e *exportErrors) addScanError(table string, err error) {
+	e.scanErrors = append(e.scanErrors, fmt.Sprintf("%s: %s", table, err))
+}
+
+func (e *exportErrors) summarize() {
+	total := len(e.writeErrors) + len(e.scanErrors)
+	if total == 0 {
+		return
+	}
+	fmt.Printf("\nWarnings (%d):\n", total)
+	for _, w := range e.writeErrors {
+		fmt.Printf("  [write] %s\n", w)
+	}
+	for _, s := range e.scanErrors {
+		fmt.Printf("  [scan]  %s\n", s)
+	}
+}
+
 // RegisterExportCommands adds evidence export commands.
 func RegisterExportCommands(root *cobra.Command) {
 	exportCmd := &cobra.Command{
@@ -80,6 +109,8 @@ Formats:
 
 // exportJSON produces a machine-readable JSON evidence bundle.
 func exportJSON(metaDB, auditDB *sql.DB, wsUUID string, ws interface{ /* Workspace fields */ }, output string) error {
+	errs := &exportErrors{}
+
 	type workspace interface {
 		GetName() string
 	}
@@ -89,22 +120,24 @@ func exportJSON(metaDB, auditDB *sql.DB, wsUUID string, ws interface{ /* Workspa
 		"workspace_id": wsUUID,
 		"format":       "stratus_evidence_bundle_v1",
 	}, "", "  ")
-	os.WriteFile(filepath.Join(output, "manifest.json"), wsData, 0644)
+	if err := os.WriteFile(filepath.Join(output, "manifest.json"), wsData, 0644); err != nil {
+		errs.addWriteError("manifest.json", err)
+	}
 
 	// Identities
-	idCount := exportIdentitiesJSON(metaDB, wsUUID, output)
+	idCount := exportIdentitiesJSON(metaDB, wsUUID, output, errs)
 
 	// Sessions
-	sessCount := exportSessionsJSON(metaDB, wsUUID, output)
+	sessCount := exportSessionsJSON(metaDB, wsUUID, output, errs)
 
 	// Graph
-	graphCount := exportGraphJSON(metaDB, wsUUID, output)
+	graphCount := exportGraphJSON(metaDB, wsUUID, output, errs)
 
 	// Module runs
-	runCount := exportRunsJSON(metaDB, wsUUID, output)
+	runCount := exportRunsJSON(metaDB, wsUUID, output, errs)
 
 	// Audit log
-	auditCount := exportAuditJSON(auditDB, wsUUID, output)
+	auditCount := exportAuditJSON(auditDB, wsUUID, output, errs)
 
 	fmt.Printf("  Identities: %d\n", idCount)
 	fmt.Printf("  Sessions:   %d\n", sessCount)
@@ -112,10 +145,12 @@ func exportJSON(metaDB, auditDB *sql.DB, wsUUID string, ws interface{ /* Workspa
 	fmt.Printf("  Runs:       %d\n", runCount)
 	fmt.Printf("  Audit:      %d events\n", auditCount)
 	fmt.Printf("\nEvidence bundle exported to: %s\n", output)
+
+	errs.summarize()
 	return nil
 }
 
-func exportIdentitiesJSON(db *sql.DB, wsUUID, output string) int {
+func exportIdentitiesJSON(db *sql.DB, wsUUID, output string, errs *exportErrors) int {
 	rows, err := db.Query(
 		`SELECT uuid, label, account_id, principal_arn, principal_type, source_type, acquired_at, tags, is_archived
 		 FROM identities WHERE workspace_uuid = ?`, wsUUID)
@@ -128,7 +163,10 @@ func exportIdentitiesJSON(db *sql.DB, wsUUID, output string) int {
 	for rows.Next() {
 		var uuid, label, accountID, principalARN, principalType, sourceType, acquiredAt, tags string
 		var isArchived int
-		rows.Scan(&uuid, &label, &accountID, &principalARN, &principalType, &sourceType, &acquiredAt, &tags, &isArchived)
+		if err := rows.Scan(&uuid, &label, &accountID, &principalARN, &principalType, &sourceType, &acquiredAt, &tags, &isArchived); err != nil {
+			errs.addScanError("identities", err)
+			continue
+		}
 		data, _ := json.MarshalIndent(map[string]any{
 			"uuid":           uuid,
 			"label":          label,
@@ -139,13 +177,15 @@ func exportIdentitiesJSON(db *sql.DB, wsUUID, output string) int {
 			"acquired_at":    acquiredAt,
 			"is_archived":    isArchived != 0,
 		}, "", "  ")
-		os.WriteFile(filepath.Join(output, "identities", uuid+".json"), data, 0644)
+		if err := os.WriteFile(filepath.Join(output, "identities", uuid+".json"), data, 0644); err != nil {
+			errs.addWriteError("identities/"+uuid+".json", err)
+		}
 		count++
 	}
 	return count
 }
 
-func exportSessionsJSON(db *sql.DB, wsUUID, output string) int {
+func exportSessionsJSON(db *sql.DB, wsUUID, output string, errs *exportErrors) int {
 	rows, err := db.Query(
 		`SELECT uuid, identity_uuid, aws_access_key_id, session_name, region, expiry,
 		        health_status, created_at, chain_parent_session_uuid, refresh_method
@@ -159,7 +199,10 @@ func exportSessionsJSON(db *sql.DB, wsUUID, output string) int {
 	for rows.Next() {
 		var uuid, identityUUID, accessKeyID, name, region, health, createdAt string
 		var expiry, chainParent, refreshMethod sql.NullString
-		rows.Scan(&uuid, &identityUUID, &accessKeyID, &name, &region, &expiry, &health, &createdAt, &chainParent, &refreshMethod)
+		if err := rows.Scan(&uuid, &identityUUID, &accessKeyID, &name, &region, &expiry, &health, &createdAt, &chainParent, &refreshMethod); err != nil {
+			errs.addScanError("sessions", err)
+			continue
+		}
 
 		// Redact access key
 		redactedKey := accessKeyID
@@ -187,28 +230,32 @@ func exportSessionsJSON(db *sql.DB, wsUUID, output string) int {
 		}
 
 		data, _ := json.MarshalIndent(entry, "", "  ")
-		os.WriteFile(filepath.Join(output, "sessions", uuid+".json"), data, 0644)
+		if err := os.WriteFile(filepath.Join(output, "sessions", uuid+".json"), data, 0644); err != nil {
+			errs.addWriteError("sessions/"+uuid+".json", err)
+		}
 		count++
 	}
 	return count
 }
 
-func exportGraphJSON(db *sql.DB, wsUUID, output string) int {
+func exportGraphJSON(db *sql.DB, wsUUID, output string, errs *exportErrors) int {
 	store := graph.NewStore(db, wsUUID)
 	data, err := store.Snapshot()
 	if err != nil {
 		return 0
 	}
-	os.WriteFile(filepath.Join(output, "graph", "graph.json"), data, 0644)
+	if err := os.WriteFile(filepath.Join(output, "graph", "graph.json"), data, 0644); err != nil {
+		errs.addWriteError("graph/graph.json", err)
+	}
 
-	// Count nodes + edges
+	// Count nodes + edges (acceptable to default to 0 on scan error)
 	var nodeCount, edgeCount int
 	db.QueryRow("SELECT COUNT(*) FROM graph_nodes WHERE workspace_uuid = ?", wsUUID).Scan(&nodeCount)
 	db.QueryRow("SELECT COUNT(*) FROM graph_edges WHERE workspace_uuid = ?", wsUUID).Scan(&edgeCount)
 	return nodeCount + edgeCount
 }
 
-func exportRunsJSON(db *sql.DB, wsUUID, output string) int {
+func exportRunsJSON(db *sql.DB, wsUUID, output string, errs *exportErrors) int {
 	rows, err := db.Query(
 		`SELECT uuid, module_id, module_version, session_uuid, status, started_at, completed_at, inputs, outputs, error_detail
 		 FROM module_runs WHERE workspace_uuid = ? ORDER BY started_at DESC`, wsUUID)
@@ -221,7 +268,10 @@ func exportRunsJSON(db *sql.DB, wsUUID, output string) int {
 	for rows.Next() {
 		var uuid, moduleID, moduleVersion, sessionUUID, status, startedAt string
 		var completedAt, inputs, outputs, errorDetail sql.NullString
-		rows.Scan(&uuid, &moduleID, &moduleVersion, &sessionUUID, &status, &startedAt, &completedAt, &inputs, &outputs, &errorDetail)
+		if err := rows.Scan(&uuid, &moduleID, &moduleVersion, &sessionUUID, &status, &startedAt, &completedAt, &inputs, &outputs, &errorDetail); err != nil {
+			errs.addScanError("module_runs", err)
+			continue
+		}
 
 		entry := map[string]any{
 			"uuid":           uuid,
@@ -251,13 +301,15 @@ func exportRunsJSON(db *sql.DB, wsUUID, output string) int {
 		}
 
 		data, _ := json.MarshalIndent(entry, "", "  ")
-		os.WriteFile(filepath.Join(output, "runs", uuid+".json"), data, 0644)
+		if err := os.WriteFile(filepath.Join(output, "runs", uuid+".json"), data, 0644); err != nil {
+			errs.addWriteError("runs/"+uuid+".json", err)
+		}
 		count++
 	}
 	return count
 }
 
-func exportAuditJSON(auditDB *sql.DB, wsUUID, output string) int {
+func exportAuditJSON(auditDB *sql.DB, wsUUID, output string, errs *exportErrors) int {
 	rows, err := auditDB.Query(
 		`SELECT id, timestamp, session_uuid, run_uuid, operator, event_type, detail, record_hash
 		 FROM audit_log WHERE workspace_uuid = ? ORDER BY id ASC`, wsUUID)
@@ -270,7 +322,10 @@ func exportAuditJSON(auditDB *sql.DB, wsUUID, output string) int {
 	for rows.Next() {
 		var id int64
 		var ts, sessionUUID, runUUID, operator, eventType, detail, recordHash string
-		rows.Scan(&id, &ts, &sessionUUID, &runUUID, &operator, &eventType, &detail, &recordHash)
+		if err := rows.Scan(&id, &ts, &sessionUUID, &runUUID, &operator, &eventType, &detail, &recordHash); err != nil {
+			errs.addScanError("audit_log", err)
+			continue
+		}
 
 		entry := map[string]any{
 			"id":          id,
@@ -298,22 +353,25 @@ func exportAuditJSON(auditDB *sql.DB, wsUUID, output string) int {
 	}
 
 	data, _ := json.MarshalIndent(entries, "", "  ")
-	os.WriteFile(filepath.Join(output, "audit", "audit.json"), data, 0644)
+	if err := os.WriteFile(filepath.Join(output, "audit", "audit.json"), data, 0644); err != nil {
+		errs.addWriteError("audit/audit.json", err)
+	}
 	return len(entries)
 }
 
 // exportMarkdown produces a human-readable markdown evidence bundle.
 func exportMarkdown(metaDB, auditDB *sql.DB, wsUUID string, ws interface{}, output string) error {
+	errs := &exportErrors{}
 	now := time.Now().UTC()
 
 	// Gather data
-	identities := gatherIdentities(metaDB, wsUUID)
-	sessions := gatherSessions(metaDB, wsUUID)
-	runs := gatherRuns(metaDB, wsUUID)
+	identities := gatherIdentities(metaDB, wsUUID, errs)
+	sessions := gatherSessions(metaDB, wsUUID, errs)
+	runs := gatherRuns(metaDB, wsUUID, errs)
 
 	// Also export JSON artifacts alongside markdown
-	exportGraphJSON(metaDB, wsUUID, output)
-	auditCount := exportAuditJSON(auditDB, wsUUID, output)
+	exportGraphJSON(metaDB, wsUUID, output, errs)
+	auditCount := exportAuditJSON(auditDB, wsUUID, output, errs)
 
 	// Write main report
 	var sb strings.Builder
@@ -413,6 +471,7 @@ func exportMarkdown(metaDB, auditDB *sql.DB, wsUUID string, ws interface{}, outp
 	// Graph
 	sb.WriteString("## Pivot Graph\n\n")
 	var nodeCount, edgeCount int
+	// Count queries — acceptable to default to 0 on scan error
 	metaDB.QueryRow("SELECT COUNT(*) FROM graph_nodes WHERE workspace_uuid = ?", wsUUID).Scan(&nodeCount)
 	metaDB.QueryRow("SELECT COUNT(*) FROM graph_edges WHERE workspace_uuid = ?", wsUUID).Scan(&edgeCount)
 	sb.WriteString(fmt.Sprintf("- **Nodes:** %d\n", nodeCount))
@@ -432,7 +491,10 @@ func exportMarkdown(metaDB, auditDB *sql.DB, wsUUID string, ws interface{}, outp
 			for edgeRows.Next() {
 				var src, tgt, edgeType string
 				var confidence float64
-				edgeRows.Scan(&src, &tgt, &edgeType, &confidence)
+				if err := edgeRows.Scan(&src, &tgt, &edgeType, &confidence); err != nil {
+					errs.addScanError("graph_edges", err)
+					continue
+				}
 				sb.WriteString(fmt.Sprintf("| `%s` | `%s` | %s | %.0f%% |\n",
 					truncateARN(src), truncateARN(tgt), edgeType, confidence*100))
 			}
@@ -453,12 +515,12 @@ func exportMarkdown(metaDB, auditDB *sql.DB, wsUUID string, ws interface{}, outp
 
 	// Also write per-identity markdown files
 	for _, id := range identities {
-		writeIdentityMarkdown(output, id)
+		writeIdentityMarkdown(output, id, errs)
 	}
 
 	// Also write per-run markdown files
 	for _, r := range runs {
-		writeRunMarkdown(output, r)
+		writeRunMarkdown(output, r, errs)
 	}
 
 	fmt.Printf("  Report:     %s\n", reportPath)
@@ -467,12 +529,14 @@ func exportMarkdown(metaDB, auditDB *sql.DB, wsUUID string, ws interface{}, outp
 	fmt.Printf("  Runs:       %d\n", len(runs))
 	fmt.Printf("  Audit:      %d events\n", auditCount)
 	fmt.Printf("\nEvidence bundle exported to: %s\n", output)
+
+	errs.summarize()
 	return nil
 }
 
 // Data gathering helpers
 
-func gatherIdentities(db *sql.DB, wsUUID string) []map[string]any {
+func gatherIdentities(db *sql.DB, wsUUID string, errs *exportErrors) []map[string]any {
 	rows, err := db.Query(
 		`SELECT uuid, label, account_id, principal_arn, principal_type, source_type, acquired_at, tags, is_archived
 		 FROM identities WHERE workspace_uuid = ?`, wsUUID)
@@ -485,7 +549,10 @@ func gatherIdentities(db *sql.DB, wsUUID string) []map[string]any {
 	for rows.Next() {
 		var uuid, label, accountID, principalARN, principalType, sourceType, acquiredAt, tags string
 		var isArchived int
-		rows.Scan(&uuid, &label, &accountID, &principalARN, &principalType, &sourceType, &acquiredAt, &tags, &isArchived)
+		if err := rows.Scan(&uuid, &label, &accountID, &principalARN, &principalType, &sourceType, &acquiredAt, &tags, &isArchived); err != nil {
+			errs.addScanError("identities", err)
+			continue
+		}
 		result = append(result, map[string]any{
 			"uuid":           uuid,
 			"label":          label,
@@ -501,7 +568,7 @@ func gatherIdentities(db *sql.DB, wsUUID string) []map[string]any {
 	return result
 }
 
-func gatherSessions(db *sql.DB, wsUUID string) []map[string]any {
+func gatherSessions(db *sql.DB, wsUUID string, errs *exportErrors) []map[string]any {
 	rows, err := db.Query(
 		`SELECT uuid, identity_uuid, aws_access_key_id, session_name, region, expiry,
 		        health_status, created_at, chain_parent_session_uuid
@@ -515,7 +582,10 @@ func gatherSessions(db *sql.DB, wsUUID string) []map[string]any {
 	for rows.Next() {
 		var uuid, identityUUID, accessKeyID, name, region, health, createdAt string
 		var expiry, chainParent sql.NullString
-		rows.Scan(&uuid, &identityUUID, &accessKeyID, &name, &region, &expiry, &health, &createdAt, &chainParent)
+		if err := rows.Scan(&uuid, &identityUUID, &accessKeyID, &name, &region, &expiry, &health, &createdAt, &chainParent); err != nil {
+			errs.addScanError("sessions", err)
+			continue
+		}
 
 		keyHint := accessKeyID
 		if len(keyHint) > 8 {
@@ -542,7 +612,7 @@ func gatherSessions(db *sql.DB, wsUUID string) []map[string]any {
 	return result
 }
 
-func gatherRuns(db *sql.DB, wsUUID string) []map[string]any {
+func gatherRuns(db *sql.DB, wsUUID string, errs *exportErrors) []map[string]any {
 	rows, err := db.Query(
 		`SELECT uuid, module_id, module_version, session_uuid, status, started_at, completed_at, inputs, outputs, error_detail
 		 FROM module_runs WHERE workspace_uuid = ? ORDER BY started_at DESC`, wsUUID)
@@ -555,7 +625,10 @@ func gatherRuns(db *sql.DB, wsUUID string) []map[string]any {
 	for rows.Next() {
 		var uuid, moduleID, moduleVersion, sessionUUID, status, startedAt string
 		var completedAt, inputs, outputs, errorDetail sql.NullString
-		rows.Scan(&uuid, &moduleID, &moduleVersion, &sessionUUID, &status, &startedAt, &completedAt, &inputs, &outputs, &errorDetail)
+		if err := rows.Scan(&uuid, &moduleID, &moduleVersion, &sessionUUID, &status, &startedAt, &completedAt, &inputs, &outputs, &errorDetail); err != nil {
+			errs.addScanError("module_runs", err)
+			continue
+		}
 
 		entry := map[string]any{
 			"uuid":           uuid,
@@ -582,7 +655,7 @@ func gatherRuns(db *sql.DB, wsUUID string) []map[string]any {
 	return result
 }
 
-func writeIdentityMarkdown(output string, id map[string]any) {
+func writeIdentityMarkdown(output string, id map[string]any, errs *exportErrors) {
 	uuid := id["uuid"].(string)
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Identity: %s\n\n", id["label"]))
@@ -595,10 +668,12 @@ func writeIdentityMarkdown(output string, id map[string]any) {
 	if archived, ok := id["is_archived"].(bool); ok && archived {
 		sb.WriteString("- **Status:** ARCHIVED\n")
 	}
-	os.WriteFile(filepath.Join(output, "identities", uuid+".md"), []byte(sb.String()), 0644)
+	if err := os.WriteFile(filepath.Join(output, "identities", uuid+".md"), []byte(sb.String()), 0644); err != nil {
+		errs.addWriteError("identities/"+uuid+".md", err)
+	}
 }
 
-func writeRunMarkdown(output string, r map[string]any) {
+func writeRunMarkdown(output string, r map[string]any, errs *exportErrors) {
 	uuid := r["uuid"].(string)
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Module Run: %s\n\n", r["module_id"]))
@@ -623,7 +698,9 @@ func writeRunMarkdown(output string, r map[string]any) {
 		prettyPrintJSON(&sb, outputs.(string))
 		sb.WriteString("\n```\n")
 	}
-	os.WriteFile(filepath.Join(output, "runs", uuid+".md"), []byte(sb.String()), 0644)
+	if err := os.WriteFile(filepath.Join(output, "runs", uuid+".md"), []byte(sb.String()), 0644); err != nil {
+		errs.addWriteError("runs/"+uuid+".md", err)
+	}
 }
 
 func prettyPrintJSON(sb *strings.Builder, raw string) {

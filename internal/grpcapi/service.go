@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/stratus-framework/stratus/internal/artifact"
 	"github.com/stratus-framework/stratus/internal/audit"
@@ -19,6 +20,7 @@ import (
 	"github.com/stratus-framework/stratus/internal/module"
 	"github.com/stratus-framework/stratus/internal/scope"
 	"github.com/stratus-framework/stratus/internal/session"
+	sdk "github.com/stratus-framework/stratus/pkg/sdk/v1"
 )
 
 // Service is the unified API service that backs both gRPC and direct CLI access.
@@ -306,12 +308,17 @@ func (s *Service) GetGraphStats() (*GraphStats, error) {
 
 // ModuleInfo is a transport-safe module metadata representation.
 type ModuleInfo struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Description string   `json:"description"`
-	RiskClass   string   `json:"risk_class"`
-	Services    []string `json:"services"`
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Version         string           `json:"version"`
+	Description     string           `json:"description"`
+	RiskClass       string           `json:"risk_class"`
+	Services        []string         `json:"services"`
+	Author          string           `json:"author"`
+	Inputs          []sdk.InputSpec  `json:"inputs,omitempty"`
+	Outputs         []sdk.OutputSpec `json:"outputs,omitempty"`
+	References      []string         `json:"references,omitempty"`
+	RequiredActions []string         `json:"required_actions,omitempty"`
 }
 
 func (s *Service) ListModules(keyword, service, riskClass string) []ModuleInfo {
@@ -323,12 +330,17 @@ func (s *Service) ListModules(keyword, service, riskClass string) []ModuleInfo {
 	var metas []ModuleInfo
 	for _, m := range reg.Search(keyword, service, riskClass, "") {
 		metas = append(metas, ModuleInfo{
-			ID:          m.ID,
-			Name:        m.Name,
-			Version:     m.Version,
-			Description: m.Description,
-			RiskClass:   m.RiskClass,
-			Services:    m.Services,
+			ID:              m.ID,
+			Name:            m.Name,
+			Version:         m.Version,
+			Description:     m.Description,
+			RiskClass:       m.RiskClass,
+			Services:        m.Services,
+			Author:          m.Author,
+			Inputs:          m.Inputs,
+			Outputs:         m.Outputs,
+			References:      m.References,
+			RequiredActions: m.RequiredActions,
 		})
 	}
 	return metas
@@ -484,6 +496,220 @@ func (s *Service) ListRuns(moduleFilter, statusFilter string) ([]RunInfo, error)
 
 func (s *Service) VerifyAuditChain() (bool, int, error) {
 	return audit.Verify(s.engine.AuditDB, s.engine.Workspace.UUID)
+}
+
+// AuditEntry is a transport-safe audit log entry.
+type AuditEntry struct {
+	ID          int64  `json:"id"`
+	Timestamp   string `json:"timestamp"`
+	SessionUUID string `json:"session_uuid,omitempty"`
+	RunUUID     string `json:"run_uuid,omitempty"`
+	Operator    string `json:"operator"`
+	EventType   string `json:"event_type"`
+	Detail      string `json:"detail"`
+	RecordHash  string `json:"record_hash"`
+}
+
+func (s *Service) ListAuditEvents(limit, offset int, eventTypeFilter string) ([]AuditEntry, error) {
+	query := `SELECT id, timestamp, session_uuid, run_uuid, operator, event_type, detail, record_hash
+	          FROM audit_log WHERE workspace_uuid = ?`
+	args := []any{s.engine.Workspace.UUID}
+
+	if eventTypeFilter != "" {
+		query += " AND event_type = ?"
+		args = append(args, eventTypeFilter)
+	}
+	query += " ORDER BY id DESC"
+
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+	if offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, offset)
+	}
+
+	rows, err := s.engine.AuditDB.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying audit log: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []AuditEntry
+	for rows.Next() {
+		var e AuditEntry
+		var sessUUID, runUUID sql.NullString
+		if err := rows.Scan(&e.ID, &e.Timestamp, &sessUUID, &runUUID, &e.Operator, &e.EventType, &e.Detail, &e.RecordHash); err != nil {
+			return nil, fmt.Errorf("scanning audit entry: %w", err)
+		}
+		if sessUUID.Valid {
+			e.SessionUUID = sessUUID.String
+		}
+		if runUUID.Valid {
+			e.RunUUID = runUUID.String
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+// --- Graph snapshot ---
+
+func (s *Service) GetGraphSnapshot() (string, error) {
+	gs := graph.NewStore(s.engine.MetadataDB, s.engine.Workspace.UUID)
+	data, err := gs.Snapshot()
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// --- Scope operations ---
+
+// ScopeInfo is a transport-safe scope representation.
+type ScopeInfo struct {
+	AccountIDs []string `json:"account_ids,omitempty"`
+	Regions    []string `json:"regions,omitempty"`
+	Partition  string   `json:"partition,omitempty"`
+	OrgID      string   `json:"org_id,omitempty"`
+}
+
+func (s *Service) GetScopeInfo() *ScopeInfo {
+	sc := s.engine.Workspace.ScopeConfig
+	return &ScopeInfo{
+		AccountIDs: sc.AccountIDs,
+		Regions:    sc.Regions,
+		Partition:  sc.Partition,
+		OrgID:      sc.OrgID,
+	}
+}
+
+// --- Note operations ---
+
+// NoteInfo is a transport-safe note representation.
+type NoteInfo struct {
+	UUID        string `json:"uuid"`
+	SessionUUID string `json:"session_uuid,omitempty"`
+	RunUUID     string `json:"run_uuid,omitempty"`
+	NodeID      string `json:"node_id,omitempty"`
+	Content     string `json:"content"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	CreatedBy   string `json:"created_by"`
+}
+
+func (s *Service) ListNotes(sessionFilter, runFilter, nodeFilter string) ([]NoteInfo, error) {
+	query := "SELECT uuid, content, session_uuid, run_uuid, node_id, created_at, updated_at, created_by FROM notes WHERE workspace_uuid = ?"
+	args := []any{s.engine.Workspace.UUID}
+
+	if sessionFilter != "" {
+		query += " AND session_uuid = ?"
+		args = append(args, sessionFilter)
+	}
+	if runFilter != "" {
+		query += " AND run_uuid = ?"
+		args = append(args, runFilter)
+	}
+	if nodeFilter != "" {
+		query += " AND node_id = ?"
+		args = append(args, nodeFilter)
+	}
+	query += " ORDER BY created_at DESC"
+
+	rows, err := s.engine.MetadataDB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var notes []NoteInfo
+	for rows.Next() {
+		var n NoteInfo
+		rows.Scan(&n.UUID, &n.Content, &n.SessionUUID, &n.RunUUID, &n.NodeID, &n.CreatedAt, &n.UpdatedAt, &n.CreatedBy)
+		notes = append(notes, n)
+	}
+	return notes, nil
+}
+
+func (s *Service) GetNote(uuidOrPrefix string) (*NoteInfo, error) {
+	var n NoteInfo
+	err := s.engine.MetadataDB.QueryRow(
+		`SELECT uuid, content, session_uuid, run_uuid, node_id, created_at, updated_at, created_by
+		 FROM notes WHERE (uuid = ? OR uuid LIKE ?) AND workspace_uuid = ?`,
+		uuidOrPrefix, uuidOrPrefix+"%", s.engine.Workspace.UUID,
+	).Scan(&n.UUID, &n.Content, &n.SessionUUID, &n.RunUUID, &n.NodeID, &n.CreatedAt, &n.UpdatedAt, &n.CreatedBy)
+	if err != nil {
+		return nil, fmt.Errorf("note not found: %s", uuidOrPrefix)
+	}
+	return &n, nil
+}
+
+// AddNoteRequest holds parameters for adding a note.
+type AddNoteRequest struct {
+	Content     string `json:"content"`
+	SessionUUID string `json:"session_uuid,omitempty"`
+	RunUUID     string `json:"run_uuid,omitempty"`
+	NodeID      string `json:"node_id,omitempty"`
+}
+
+func (s *Service) AddNote(req AddNoteRequest) (*NoteInfo, error) {
+	noteUUID := uuid.New().String()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err := s.engine.MetadataDB.Exec(
+		`INSERT INTO notes (uuid, workspace_uuid, session_uuid, run_uuid, node_id, content, created_at, updated_at, created_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		noteUUID, s.engine.Workspace.UUID,
+		req.SessionUUID, req.RunUUID, req.NodeID,
+		req.Content, now, now, "gui",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("saving note: %w", err)
+	}
+
+	return &NoteInfo{
+		UUID:        noteUUID,
+		SessionUUID: req.SessionUUID,
+		RunUUID:     req.RunUUID,
+		NodeID:      req.NodeID,
+		Content:     req.Content,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		CreatedBy:   "gui",
+	}, nil
+}
+
+func (s *Service) UpdateNote(uuidOrPrefix, newContent string) error {
+	var fullUUID string
+	err := s.engine.MetadataDB.QueryRow(
+		"SELECT uuid FROM notes WHERE (uuid = ? OR uuid LIKE ?) AND workspace_uuid = ?",
+		uuidOrPrefix, uuidOrPrefix+"%", s.engine.Workspace.UUID,
+	).Scan(&fullUUID)
+	if err != nil {
+		return fmt.Errorf("note not found: %s", uuidOrPrefix)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = s.engine.MetadataDB.Exec(
+		"UPDATE notes SET content = ?, updated_at = ? WHERE uuid = ?",
+		newContent, now, fullUUID,
+	)
+	return err
+}
+
+func (s *Service) DeleteNote(uuidOrPrefix string) error {
+	var fullUUID string
+	err := s.engine.MetadataDB.QueryRow(
+		"SELECT uuid FROM notes WHERE (uuid = ? OR uuid LIKE ?) AND workspace_uuid = ?",
+		uuidOrPrefix, uuidOrPrefix+"%", s.engine.Workspace.UUID,
+	).Scan(&fullUUID)
+	if err != nil {
+		return fmt.Errorf("note not found: %s", uuidOrPrefix)
+	}
+
+	_, err = s.engine.MetadataDB.Exec("DELETE FROM notes WHERE uuid = ?", fullUUID)
+	return err
 }
 
 // suppress unused imports for packages used indirectly

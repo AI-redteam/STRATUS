@@ -39,7 +39,6 @@ func (m *STSEnumerateRolesChainModule) Meta() sdk.ModuleMeta {
 		Inputs: []sdk.InputSpec{
 			{Name: "max_depth", Type: "int", Default: 3, Description: "Maximum chain depth for recursive role assumption"},
 			{Name: "max_roles", Type: "int", Default: 100, Description: "Maximum roles to enumerate"},
-			{Name: "dry_assume", Type: "bool", Default: true, Description: "Test role assumption (true) or only analyze trust policies (false)"},
 		},
 		Outputs: []sdk.OutputSpec{
 			{Name: "roles_enumerated", Type: "int", Description: "Total roles discovered"},

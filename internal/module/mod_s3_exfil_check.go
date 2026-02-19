@@ -131,9 +131,8 @@ func (m *S3ExfilCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.RunR
 		// Check encryption
 		encryption, err := m.factory.GetS3BucketEncryption(bgCtx, creds, bucket)
 		if err != nil {
-			summary["encrypted"] = false
-			summary["encryption"] = "none_or_error"
-			unencryptedBuckets = append(unencryptedBuckets, bucket)
+			summary["encrypted"] = "unknown"
+			summary["encryption"] = "error"
 		} else {
 			summary["encryption"] = encryption
 			if encryption == "none" {
@@ -154,9 +153,9 @@ func (m *S3ExfilCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.RunR
 		}
 
 		// Assess risk level
-		accessible := summary["accessible"].(bool)
-		encrypted := summary["encrypted"].(bool)
-		if accessible && !encrypted {
+		accessible, _ := summary["accessible"].(bool)
+		encrypted, knownEncrypted := summary["encrypted"].(bool)
+		if accessible && knownEncrypted && !encrypted {
 			summary["risk_level"] = "critical"
 		} else if accessible {
 			summary["risk_level"] = "medium"

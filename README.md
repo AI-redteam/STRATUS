@@ -31,7 +31,7 @@ STRATUS is an operator-focused framework for authorized AWS security testing and
 - **Multi-identity management** — Import and switch between IAM keys, STS sessions, IMDS-captured creds, assumed roles, web identity tokens, and credential processes
 - **LIFO session stack** — Push/pop session contexts like a debugger call stack, with health monitoring and automatic refresh
 - **Pivot graph** — SQLite-backed directed graph with BFS pathfinding; trust policy parsing auto-discovers `can_assume` edges between principals and roles
-- **11 built-in modules** — Recon (IAM, S3, EC2, Lambda, KMS, CloudTrail), write (create access keys, modify security groups), and destructive (stop CloudTrail) operations
+- **25 built-in modules** — Recon (IAM, STS, S3, EC2, EBS, Lambda, KMS, CloudTrail, CloudWatch, RDS, DynamoDB, ECS, SNS, Secrets Manager, SSM), write (create access keys, modify security groups), and destructive (stop CloudTrail, backdoor role trust policies) operations
 - **Blast radius scope enforcement** — 4-layer enforcement (module runner, AWS adapter, CLI commands, pivot operations) for region, account, partition, and ARN boundaries
 - **Encrypted vault** — AES-256-GCM with Argon2id KDF protects all credential material at rest
 - **Append-only audit log** — SHA-256 hash chain records every API call, module run, and identity operation for tamper-evident evidence
@@ -238,6 +238,19 @@ cmd/stratus-gui/
 | `com.stratus.lambda.enumerate-functions` | Enumerate Lambda Functions | Lambda | Lists functions with runtime, memory, VPC config |
 | `com.stratus.ec2.enumerate-instances` | Enumerate EC2 Instances | EC2 | Lists instances across regions with security group mappings |
 | `com.stratus.ec2.security-group-audit` | Security Group Audit | EC2 | Identifies security groups with overly permissive ingress rules |
+| `com.stratus.ec2.userdata-extract` | Extract EC2 User Data | EC2 | Extracts instance user data containing bootstrap scripts, embedded credentials, and config |
+| `com.stratus.ebs.enumerate-snapshots` | Enumerate EBS Snapshots | EC2 | Lists account-owned EBS snapshots, identifies unencrypted snapshots for data extraction |
+| `com.stratus.lambda.extract-env-vars` | Extract Lambda Env Vars | Lambda | Retrieves Lambda environment variables, flags sensitive-looking credentials and API keys |
+| `com.stratus.s3.exfil-check` | S3 Exfiltration Check | S3 | Assesses bucket-level data access controls, encryption config, and exfiltration risk |
+| `com.stratus.iam.policy-analyzer` | IAM Privilege Escalation Analyzer | IAM | Detects 20+ privilege escalation patterns (PassRole, PutUserPolicy, AttachRolePolicy, etc.) |
+| `com.stratus.sts.enumerate-roles-chain` | Recursive Role Chain Discovery | STS, IAM | Depth-limited BFS through assumable roles, builds comprehensive lateral movement pivot graph |
+| `com.stratus.secretsmanager.enumerate` | Enumerate Secrets Manager | SecretsManager | Lists secrets, optionally retrieves values to identify exposed credentials and API keys |
+| `com.stratus.ssm.enumerate-parameters` | Enumerate SSM Parameters | SSM | Lists Parameter Store entries, identifies SecureString parameters containing credentials |
+| `com.stratus.cloudwatch.enumerate-logs` | Enumerate CloudWatch Log Groups | CloudWatch | Lists log groups with retention and data volume, assesses monitoring posture |
+| `com.stratus.rds.enumerate-instances` | Enumerate RDS Instances | RDS | Lists RDS instances and snapshots, identifies publicly accessible and unencrypted databases |
+| `com.stratus.dynamodb.enumerate-tables` | Enumerate DynamoDB Tables | DynamoDB | Lists tables with item counts, size, encryption status, and table class |
+| `com.stratus.ecs.enumerate-clusters` | Enumerate ECS Clusters | ECS | Lists clusters and running tasks, identifies task IAM roles for lateral movement |
+| `com.stratus.sns.enumerate-topics` | Enumerate SNS Topics | SNS | Lists topics with access policies, identifies overly permissive public/cross-account access |
 
 ### Offensive (write / destructive)
 
@@ -246,6 +259,7 @@ cmd/stratus-gui/
 | `com.stratus.iam.create-access-key` | Create IAM Access Key | write | Creates a new access key for a target IAM user |
 | `com.stratus.ec2.modify-security-group` | Modify Security Group | write | Adds ingress rules to a security group |
 | `com.stratus.cloudtrail.stop-trail` | Stop CloudTrail Logging | destructive | Stops a CloudTrail trail (defense evasion) |
+| `com.stratus.iam.backdoor-role` | Backdoor IAM Role Trust Policy | destructive | Modifies a role's trust policy to add an attacker-controlled principal for persistence |
 
 All write/destructive modules include mandatory dry-run logging, scope enforcement, and audit chain recording.
 
@@ -299,7 +313,7 @@ internal/
   scope/                  Blast radius enforcement (region, account, partition, ARN)
   audit/                  Append-only hash chain audit log
   artifact/               Content-addressed file store (SHA-256 hashing, integrity verification)
-  module/                 Module registry, runner, and 11 built-in modules
+  module/                 Module registry, runner, and 25 built-in modules
   pki/                    mTLS certificate authority and certificate generation
   logging/                Structured logging with secret redaction
   aws/                    AWS SDK v2 adapter (rate limiting, retry, caching, audit logging)
@@ -309,7 +323,7 @@ pkg/
   sdk/v1/                 Module developer SDK interface
 ```
 
-**Codebase stats:** ~19,300 lines Go across 68 files, ~2,000 lines TypeScript across 20 frontend files, 15 test packages passing.
+**Codebase stats:** ~23,900 lines Go across 82 files, ~2,000 lines TypeScript across 20 frontend files, 15 test packages passing.
 
 ## Development
 

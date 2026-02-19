@@ -111,11 +111,6 @@ func TestBuiltinModulesRegister(t *testing.T) {
 
 	RegisterBuiltinModules(reg, nil, nil)
 
-	metas := reg.List()
-	if len(metas) != 25 {
-		t.Fatalf("expected 25 built-in modules, got %d", len(metas))
-	}
-
 	// Verify all expected modules are present
 	expectedIDs := map[string]bool{
 		"com.stratus.iam.enumerate-roles":            false,
@@ -143,6 +138,11 @@ func TestBuiltinModulesRegister(t *testing.T) {
 		"com.stratus.dynamodb.enumerate-tables":      false,
 		"com.stratus.ecs.enumerate-clusters":         false,
 		"com.stratus.sns.enumerate-topics":           false,
+	}
+
+	metas := reg.List()
+	if len(metas) != len(expectedIDs) {
+		t.Fatalf("expected %d built-in modules, got %d", len(expectedIDs), len(metas))
 	}
 
 	for _, meta := range metas {

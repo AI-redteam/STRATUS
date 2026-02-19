@@ -13,6 +13,7 @@ STRATUS is an operator-focused framework for authorized AWS security testing and
 - [Features](#features)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
+- [Getting Started](#getting-started)
 - [Building](#building)
 - [Quick Start (CLI)](#quick-start-cli)
 - [GUI](#gui)
@@ -93,29 +94,42 @@ STRATUS is an operator-focused framework for authorized AWS security testing and
 |------------|---------|-------|
 | Go | 1.23+ | toolchain 1.24.7; CGO required (sqlite3) |
 | Node.js | 18+ | For GUI frontend build |
-| Wails | v2 | `go install github.com/wailsapp/wails/v2/cmd/wails@latest` |
+| C compiler | any | Xcode CLT on macOS, gcc on Linux (for sqlite3) |
+
+Wails CLI and npm packages are installed automatically by `make setup`.
+
+## Getting Started
+
+```bash
+# One-time setup — installs Wails CLI, Go modules, npm packages, verifies CGO
+make setup
+
+# Verify your toolchain any time
+make check
+```
 
 ## Building
 
 ```bash
-# CLI binary
-make build                  # → bin/stratus
+# Build everything (CLI + teamserver + GUI) in one command
+make build
 
-# Teamserver binary
+# Build CLI + teamserver only (no frontend, fast)
+make quick
+
+# Individual targets
+make build-cli              # → bin/stratus
 make build-server           # → bin/stratus-server
-
-# GUI (desktop app)
-cd cmd/stratus-gui/frontend && npm install   # first time only
 make build-gui              # → cmd/stratus-gui/build/bin/
-
-# All targets
-make build build-server build-gui
 
 # Run tests (15 packages)
 make test
 
 # Cross-compile CLI for Linux/macOS/Windows
 make build-all
+
+# See all available targets
+make help
 ```
 
 ## Quick Start (CLI)
@@ -169,8 +183,8 @@ The STRATUS GUI is a native desktop application (Wails v2) providing a full oper
 ### Running
 
 ```bash
-# Development mode (hot reload for frontend changes)
-make dev-gui
+# Development mode with hot reload (from repo root — no cd needed)
+make dev
 
 # Production build
 make build-gui
@@ -328,6 +342,9 @@ pkg/
 ## Development
 
 ```bash
+# GUI development with hot reload
+make dev
+
 # Run all tests with race detection
 make test
 
@@ -341,8 +358,16 @@ make vet
 # Lint (requires golangci-lint)
 make lint
 
-# GUI development with hot reload
-make dev-gui
+# See all available targets
+make help
+```
+
+There is also a standalone dev script for users who don't use `make`:
+
+```bash
+./scripts/dev.sh            # Check deps, auto-install npm packages, start wails dev
+./scripts/dev.sh --cli      # Quick CLI build
+./scripts/dev.sh --server   # Quick teamserver build
 ```
 
 ### Key development patterns

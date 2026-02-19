@@ -65,6 +65,15 @@ Prioritized list of planned work beyond the v1 MVP.
 - [ ] **P3** — Multi-workspace support (single teamserver, multiple engagements)
 - [ ] **P3** — Webhook integrations (Slack/Discord notifications on module completion)
 
+## Distribution & CI/CD
+
+- [ ] **P1** — CI/CD pipeline (GitHub Actions: build, test, lint, release on tag)
+- [ ] **P1** — GitHub Releases with pre-built binaries via goreleaser (CLI + GUI per platform)
+- [ ] **P2** — Homebrew tap for macOS (`brew install stratus`)
+- [ ] **P2** — `.deb` / `.rpm` packages for Linux
+- [ ] **P2** — Docker image for teamserver (`docker run stratus-server serve ...`)
+- [ ] **P3** — Wails v3 migration (when stable — update Makefile/scripts accordingly)
+
 ## Testing & Quality
 
 - [ ] **P0** — Integration tests for module execution (mock AWS responses with httptest)
@@ -72,7 +81,6 @@ Prioritized list of planned work beyond the v1 MVP.
 - [ ] **P1** — End-to-end test: workspace create → import identity → run module → verify artifact
 - [ ] **P1** — Fuzz testing for trust policy parser
 - [ ] **P2** — Benchmark tests for graph pathfinding at scale (1000+ nodes)
-- [ ] **P2** — CI/CD pipeline (GitHub Actions: build, test, lint, release)
 
 ## Documentation
 

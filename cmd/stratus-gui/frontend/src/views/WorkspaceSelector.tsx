@@ -15,14 +15,16 @@ export function WorkspaceSelector({ onOpen }: Props) {
   const [error, setError] = useState('');
   const [opening, setOpening] = useState(false);
 
-  useEffect(() => {
-    api.listWorkspaces()
-      .then(ws => {
-        setWorkspaces(ws || []);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
+  const refreshWorkspaces = async () => {
+    setLoading(true);
+    try {
+      const ws = await api.listWorkspaces();
+      setWorkspaces(ws || []);
+    } catch {}
+    setLoading(false);
+  };
+
+  useEffect(() => { refreshWorkspaces(); }, []);
 
   const handleOpen = async () => {
     if (!selected || !passphrase) return;
@@ -57,11 +59,19 @@ export function WorkspaceSelector({ onOpen }: Props) {
             No workspaces found.<br />
             Create one with the CLI first:<br />
             <code className="text-xs mt-2 block text-stratus-accent">stratus workspace new</code>
+            <button onClick={refreshWorkspaces} className="btn-ghost text-xs mt-4">
+              Refresh
+            </button>
           </div>
         ) : (
           <>
             <div>
-              <label className="block text-xs text-stratus-muted uppercase mb-2">Select Workspace</label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs text-stratus-muted uppercase">Select Workspace</label>
+                <button onClick={refreshWorkspaces} className="text-xs text-stratus-accent hover:underline">
+                  Refresh
+                </button>
+              </div>
               <div className="space-y-2 max-h-48 overflow-y-auto">
                 {workspaces.map(ws => (
                   <button

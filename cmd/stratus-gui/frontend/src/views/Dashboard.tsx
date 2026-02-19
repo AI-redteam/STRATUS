@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import type { WorkspaceInfo, ScopeInfo, GraphStats, RunInfo } from '../types/api';
 import * as api from '../hooks/useWails';
-import { Badge } from '../components/shared/Badge';
+import { Badge, statusBadge } from '../components/shared/Badge';
 import { DataTable, Column } from '../components/shared/DataTable';
 import { LoadingState, ErrorBanner } from '../components/shared/Spinner';
-import { formatDate, shortUUID, statusBadge } from '../lib/format';
+import { formatDate, shortUUID } from '../lib/format';
 
 interface Props {
   onRefresh: () => void;

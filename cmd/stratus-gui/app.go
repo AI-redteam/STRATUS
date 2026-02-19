@@ -8,7 +8,7 @@ import (
 
 	"github.com/stratus-framework/stratus/internal/config"
 	"github.com/stratus-framework/stratus/internal/core"
-	"github.com/stratus-framework/stratus/internal/db"
+	stratusdb "github.com/stratus-framework/stratus/internal/db"
 	"github.com/stratus-framework/stratus/internal/grpcapi"
 )
 
@@ -73,13 +73,13 @@ func (a *App) ListWorkspaces() ([]WorkspaceEntry, error) {
 			continue
 		}
 		wsPath := filepath.Join(cfg.WorkspacesDir, entry.Name())
-		metaPath := filepath.Join(wsPath, "metadata.db")
+		metaPath := filepath.Join(wsPath, stratusdb.MetadataDBFile)
 		if _, err := os.Stat(metaPath); err != nil {
 			continue
 		}
 
 		// Try to read workspace name from the DB
-		metaDB, err := db.OpenMetadataDB(wsPath)
+		metaDB, err := stratusdb.OpenMetadataDB(wsPath)
 		if err != nil {
 			continue
 		}

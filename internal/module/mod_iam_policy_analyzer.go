@@ -278,12 +278,14 @@ func (m *IAMPolicyAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk
 			adminPrincipals = append(adminPrincipals, p.arn)
 			riskyPrincipals[p.arn] = true
 			privescPaths = append(privescPaths, map[string]any{
-				"principal_type": p.principalType,
-				"principal_name": p.name,
-				"principal_arn":  p.arn,
-				"finding":        "FullAdmin",
-				"description":    "Has * (all) permissions — full administrator access",
-				"severity":       "critical",
+				"principal_type":   p.principalType,
+				"principal_name":   p.name,
+				"principal_arn":    p.arn,
+				"finding":          "FullAdmin",
+				"description":      "Has * (all) permissions — full administrator access",
+				"required_actions": []string{"*"},
+				"severity":         "critical",
+				"reference":        "T1078",
 			})
 			continue
 		}

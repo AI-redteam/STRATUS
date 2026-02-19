@@ -317,7 +317,7 @@ export function PrivEscResults() {
             <div>
               <dt className="text-xs text-stratus-muted uppercase mb-2">Required Actions</dt>
               <div className="space-y-1">
-                {selectedFinding.required_actions.map(action => (
+                {(selectedFinding.required_actions || []).map(action => (
                   <div key={action} className="text-xs font-mono bg-stratus-bg rounded px-2 py-1">
                     {action}
                   </div>

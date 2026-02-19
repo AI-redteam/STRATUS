@@ -14,6 +14,7 @@ import (
 	"github.com/stratus-framework/stratus/internal/artifact"
 	"github.com/stratus-framework/stratus/internal/audit"
 	stratusaws "github.com/stratus-framework/stratus/internal/aws"
+	"github.com/stratus-framework/stratus/internal/config"
 	"github.com/stratus-framework/stratus/internal/core"
 	"github.com/stratus-framework/stratus/internal/graph"
 	"github.com/stratus-framework/stratus/internal/identity"
@@ -63,6 +64,127 @@ func (s *Service) GetWorkspace() *WorkspaceInfo {
 		Accounts:    ws.ScopeConfig.AccountIDs,
 		Regions:     ws.ScopeConfig.Regions,
 	}
+}
+
+// --- Workspace creation ---
+
+// CreateWorkspaceRequest holds parameters for creating a new workspace.
+type CreateWorkspaceRequest struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Passphrase  string   `json:"passphrase"`
+	Accounts    []string `json:"accounts"`
+	Regions     []string `json:"regions"`
+	Partition   string   `json:"partition"`
+}
+
+// CreateWorkspace creates a new workspace and returns an initialized engine.
+// This is a standalone function that does not require an existing service/engine.
+func CreateWorkspace(req CreateWorkspaceRequest) (*core.Engine, *WorkspaceInfo, error) {
+	cfg, err := config.LoadGlobalConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading config: %w", err)
+	}
+
+	scopeCfg := core.Scope{
+		AccountIDs: req.Accounts,
+		Regions:    req.Regions,
+		Partition:  req.Partition,
+	}
+
+	engine, err := core.InitWorkspace(cfg.WorkspacesDir, req.Name, req.Description, req.Passphrase, scopeCfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating workspace: %w", err)
+	}
+
+	ws := engine.Workspace
+	info := &WorkspaceInfo{
+		UUID:        ws.UUID,
+		Name:        ws.Name,
+		Description: ws.Description,
+		Owner:       ws.Owner,
+		CreatedAt:   ws.CreatedAt.Format(time.RFC3339),
+		Path:        ws.Path,
+		Accounts:    ws.ScopeConfig.AccountIDs,
+		Regions:     ws.ScopeConfig.Regions,
+	}
+	return engine, info, nil
+}
+
+// --- Scope management ---
+
+// UpdateScopeRequest holds parameters for updating workspace scope.
+type UpdateScopeRequest struct {
+	AddAccounts  []string `json:"add_accounts"`
+	AddRegions   []string `json:"add_regions"`
+	SetPartition string   `json:"set_partition"`
+}
+
+func (s *Service) UpdateScope(req UpdateScopeRequest) (*ScopeInfo, error) {
+	sc := &s.engine.Workspace.ScopeConfig
+
+	// Merge new accounts (deduplicated)
+	if len(req.AddAccounts) > 0 {
+		existing := make(map[string]bool)
+		for _, a := range sc.AccountIDs {
+			existing[a] = true
+		}
+		for _, a := range req.AddAccounts {
+			if a != "" && !existing[a] {
+				sc.AccountIDs = append(sc.AccountIDs, a)
+				existing[a] = true
+			}
+		}
+	}
+
+	// Merge new regions (deduplicated)
+	if len(req.AddRegions) > 0 {
+		existing := make(map[string]bool)
+		for _, r := range sc.Regions {
+			existing[r] = true
+		}
+		for _, r := range req.AddRegions {
+			if r != "" && !existing[r] {
+				sc.Regions = append(sc.Regions, r)
+				existing[r] = true
+			}
+		}
+	}
+
+	// Set partition if provided
+	if req.SetPartition != "" {
+		sc.Partition = req.SetPartition
+	}
+
+	// Persist updated workspace record
+	s.engine.Workspace.UpdatedAt = time.Now().UTC()
+	if err := core.SaveWorkspaceRecord(s.engine.MetadataDB, s.engine.Workspace); err != nil {
+		return nil, fmt.Errorf("saving scope update: %w", err)
+	}
+
+	return s.GetScopeInfo(), nil
+}
+
+// ScopeCheckResult holds the result of a scope check.
+type ScopeCheckResult struct {
+	InScope bool   `json:"in_scope"`
+	Reason  string `json:"reason"`
+}
+
+func (s *Service) CheckScope(region, accountID string) *ScopeCheckResult {
+	checker := scope.NewChecker(s.engine.Workspace.ScopeConfig)
+
+	if accountID != "" {
+		if err := checker.CheckAccount(accountID); err != nil {
+			return &ScopeCheckResult{InScope: false, Reason: err.Error()}
+		}
+	}
+	if region != "" {
+		if err := checker.CheckRegion(region); err != nil {
+			return &ScopeCheckResult{InScope: false, Reason: err.Error()}
+		}
+	}
+	return &ScopeCheckResult{InScope: true, Reason: "in scope"}
 }
 
 // --- Identity operations ---
@@ -224,6 +346,252 @@ func (s *Service) PeekStack() ([]SessionInfo, error) {
 func (s *Service) ExpireSession(uuid string) error {
 	mgr := session.NewManager(s.engine.MetadataDB, s.engine.AuditLogger, s.engine.Workspace.UUID)
 	return mgr.ExpireSession(uuid)
+}
+
+// --- Session intelligence ---
+
+// WhoamiResult holds the result of a caller identity verification.
+type WhoamiResult struct {
+	ARN       string `json:"arn"`
+	AccountID string `json:"account_id"`
+	UserID    string `json:"user_id"`
+	Verified  bool   `json:"verified"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (s *Service) SessionWhoami(uuid string) (*WhoamiResult, error) {
+	creds, sess, err := stratusaws.ResolveSessionCredentials(s.engine, uuid)
+	if err != nil {
+		return &WhoamiResult{Error: err.Error()}, nil
+	}
+
+	factory := stratusaws.NewClientFactory(s.logger)
+	arn, account, userID, stsErr := factory.GetCallerIdentity(context.Background(), creds)
+
+	mgr := session.NewManager(s.engine.MetadataDB, s.engine.AuditLogger, s.engine.Workspace.UUID)
+	if stsErr != nil {
+		mgr.UpdateHealth(sess.UUID, core.HealthError)
+		return &WhoamiResult{Error: stsErr.Error()}, nil
+	}
+
+	mgr.UpdateHealth(sess.UUID, core.HealthHealthy)
+	return &WhoamiResult{
+		ARN:       arn,
+		AccountID: account,
+		UserID:    userID,
+		Verified:  true,
+	}, nil
+}
+
+// SessionHealthResult holds health status for one session.
+type SessionHealthResult struct {
+	UUID   string `json:"uuid"`
+	Label  string `json:"label"`
+	Health string `json:"health"`
+	Detail string `json:"detail"`
+}
+
+func (s *Service) SessionHealthCheck() ([]SessionHealthResult, error) {
+	mgr := session.NewManager(s.engine.MetadataDB, s.engine.AuditLogger, s.engine.Workspace.UUID)
+	sessions, err := mgr.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+
+	mgr.CheckExpiry()
+
+	var results []SessionHealthResult
+	for _, sess := range sessions {
+		detail := string(sess.HealthStatus)
+		if sess.Expiry != nil {
+			remaining := time.Until(*sess.Expiry)
+			if remaining <= 0 {
+				detail = "expired"
+				mgr.UpdateHealth(sess.UUID, core.HealthExpired)
+			} else if remaining < 15*time.Minute {
+				detail = fmt.Sprintf("expiring in %dm", int(remaining.Minutes()))
+			} else {
+				detail = fmt.Sprintf("%dm remaining", int(remaining.Minutes()))
+			}
+		} else {
+			detail = "long-lived key"
+		}
+
+		results = append(results, SessionHealthResult{
+			UUID:   sess.UUID,
+			Label:  sess.SessionName,
+			Health: string(sess.HealthStatus),
+			Detail: detail,
+		})
+	}
+	return results, nil
+}
+
+func (s *Service) RefreshSession(uuid string) (*SessionInfo, error) {
+	mgr := session.NewManager(s.engine.MetadataDB, s.engine.AuditLogger, s.engine.Workspace.UUID)
+	sess, err := mgr.GetSession(uuid)
+	if err != nil {
+		return nil, err
+	}
+
+	if sess.RefreshMethod == nil {
+		return nil, fmt.Errorf("session %s has no refresh method", sess.UUID[:8])
+	}
+	if *sess.RefreshMethod != "assume_role" {
+		return nil, fmt.Errorf("unsupported refresh method: %s", *sess.RefreshMethod)
+	}
+	if sess.ChainParentSessionUUID == nil {
+		return nil, fmt.Errorf("session has no chain parent — cannot refresh")
+	}
+
+	broker := identity.NewBroker(s.engine.MetadataDB, s.engine.Vault, s.engine.AuditLogger, s.engine.Workspace.UUID)
+	id, err := broker.GetIdentity(sess.IdentityUUID)
+	if err != nil {
+		return nil, fmt.Errorf("looking up identity: %w", err)
+	}
+
+	roleARN := id.PrincipalARN
+	if roleARN == "" {
+		return nil, fmt.Errorf("identity has no principal ARN for role assumption")
+	}
+
+	// Retrieve external_id from vault
+	externalID := ""
+	raw, vaultErr := s.engine.Vault.Get(id.VaultKeyRef)
+	if vaultErr == nil {
+		var credMap map[string]string
+		if json.Unmarshal(raw, &credMap) == nil {
+			externalID = credMap["external_id"]
+		}
+	}
+
+	parentCreds, parentSess, err := stratusaws.ResolveSessionCredentials(s.engine, *sess.ChainParentSessionUUID)
+	if err != nil {
+		return nil, fmt.Errorf("resolving parent session credentials: %w", err)
+	}
+
+	factory := stratusaws.NewClientFactoryWithAudit(s.logger, s.engine.AuditLogger, parentSess.UUID)
+
+	sessionName := sess.SessionName
+	if sessionName == "" {
+		sessionName = "stratus-refresh"
+	}
+
+	result, err := factory.AssumeRole(context.Background(), parentCreds, roleARN, sessionName, externalID, 3600)
+	if err != nil {
+		return nil, fmt.Errorf("refreshing credentials: %w", err)
+	}
+
+	expiry := result.Expiration
+	_, newSess, err := broker.ImportAssumedRoleSession(identity.AssumedRoleSessionInput{
+		AccessKey:         result.AccessKeyID,
+		SecretKey:         result.SecretAccessKey,
+		SessionToken:      result.SessionToken,
+		Expiry:            &expiry,
+		Label:             sess.SessionName,
+		Region:            sess.Region,
+		RoleARN:           roleARN,
+		ExternalID:        externalID,
+		SourceSessionUUID: *sess.ChainParentSessionUUID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("importing refreshed session: %w", err)
+	}
+
+	// Push new session if old was on stack
+	stack, _ := mgr.Peek()
+	for _, s := range stack {
+		if s.UUID == sess.UUID {
+			mgr.Push(newSess.UUID)
+			break
+		}
+	}
+
+	mgr.ExpireSession(sess.UUID)
+
+	info := sessionToInfo(newSess)
+	return &info, nil
+}
+
+// --- Pivot operations ---
+
+// PivotAssumeRequest holds parameters for assuming a role.
+type PivotAssumeRequest struct {
+	RoleARN    string `json:"role_arn"`
+	ExternalID string `json:"external_id"`
+	Label      string `json:"label"`
+	Duration   int32  `json:"duration_seconds"`
+}
+
+// PivotAssumeResult holds the result of a role assumption.
+type PivotAssumeResult struct {
+	Session     SessionInfo `json:"session"`
+	AssumedRole string      `json:"assumed_role"`
+	Expiration  string      `json:"expiration"`
+}
+
+func (s *Service) PivotAssume(req PivotAssumeRequest) (*PivotAssumeResult, error) {
+	creds, sess, err := stratusaws.ResolveActiveCredentials(s.engine)
+	if err != nil {
+		return nil, err
+	}
+
+	// Enforce region scope only — intentional pivots to other accounts are allowed.
+	// The operator is explicitly choosing to assume this role.
+	checker := scope.NewChecker(s.engine.Workspace.ScopeConfig)
+	if err := checker.CheckRegion(creds.Region); err != nil {
+		return nil, fmt.Errorf("scope violation: %w", err)
+	}
+
+	factory := stratusaws.NewClientFactoryWithAudit(s.logger, s.engine.AuditLogger, sess.UUID)
+
+	sessionName := "stratus"
+	if req.Label != "" {
+		sessionName = req.Label
+	}
+	duration := req.Duration
+	if duration == 0 {
+		duration = 3600
+	}
+
+	result, err := factory.AssumeRole(context.Background(), creds, req.RoleARN, sessionName, req.ExternalID, duration)
+	if err != nil {
+		return nil, err
+	}
+
+	label := req.Label
+	if label == "" {
+		label = result.AssumedRoleARN
+	}
+
+	broker := identity.NewBroker(s.engine.MetadataDB, s.engine.Vault, s.engine.AuditLogger, s.engine.Workspace.UUID)
+	expiry := result.Expiration
+	_, newSess, err := broker.ImportAssumedRoleSession(identity.AssumedRoleSessionInput{
+		AccessKey:         result.AccessKeyID,
+		SecretKey:         result.SecretAccessKey,
+		SessionToken:      result.SessionToken,
+		Expiry:            &expiry,
+		Label:             label,
+		Region:            sess.Region,
+		RoleARN:           req.RoleARN,
+		ExternalID:        req.ExternalID,
+		SourceSessionUUID: sess.UUID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("importing assumed role session: %w", err)
+	}
+
+	mgr := session.NewManager(s.engine.MetadataDB, s.engine.AuditLogger, s.engine.Workspace.UUID)
+	pushed, err := mgr.Push(newSess.UUID)
+	if err != nil {
+		return nil, fmt.Errorf("pushing session: %w", err)
+	}
+
+	return &PivotAssumeResult{
+		Session:     sessionToInfo(pushed),
+		AssumedRole: result.AssumedRoleARN,
+		Expiration:  expiry.Format(time.RFC3339),
+	}, nil
 }
 
 // --- Graph operations ---
@@ -565,6 +933,239 @@ func (s *Service) GetGraphSnapshot() (string, error) {
 	return string(data), nil
 }
 
+// --- Artifact operations ---
+
+// ArtifactInfo is a transport-safe artifact representation.
+type ArtifactInfo struct {
+	UUID        string `json:"uuid"`
+	Label       string `json:"label"`
+	Type        string `json:"type"`
+	SHA256      string `json:"sha256"`
+	SizeBytes   int64  `json:"size_bytes"`
+	RunUUID     string `json:"run_uuid,omitempty"`
+	SessionUUID string `json:"session_uuid,omitempty"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// ArtifactContent is an artifact with its content.
+type ArtifactContent struct {
+	ArtifactInfo
+	Content string `json:"content"`
+	IsText  bool   `json:"is_text"`
+}
+
+// VerifyArtifactsResult holds integrity verification results.
+type VerifyArtifactsResult struct {
+	Total    int  `json:"total"`
+	Valid    int  `json:"valid"`
+	Corrupt  int  `json:"corrupt"`
+	AllValid bool `json:"all_valid"`
+}
+
+func (s *Service) ListArtifacts(runFilter, typeFilter string) ([]ArtifactInfo, error) {
+	store := artifact.NewStore(s.engine.MetadataDB, s.engine.Workspace.Path, s.engine.Workspace.UUID)
+	arts, err := store.List(runFilter, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var result []ArtifactInfo
+	for _, a := range arts {
+		if typeFilter != "" && string(a.ArtifactType) != typeFilter {
+			continue
+		}
+		info := ArtifactInfo{
+			UUID:        a.UUID,
+			Label:       a.Label,
+			Type:        string(a.ArtifactType),
+			SHA256:      a.ContentHash,
+			SizeBytes:   a.ByteSize,
+			SessionUUID: a.SessionUUID,
+			CreatedAt:   a.CreatedAt.Format(time.RFC3339),
+		}
+		if a.RunUUID != nil {
+			info.RunUUID = *a.RunUUID
+		}
+		result = append(result, info)
+	}
+	return result, nil
+}
+
+func (s *Service) GetArtifact(artUUID string) (*ArtifactContent, error) {
+	store := artifact.NewStore(s.engine.MetadataDB, s.engine.Workspace.Path, s.engine.Workspace.UUID)
+	art, err := store.Get(artUUID)
+	if err != nil {
+		return nil, err
+	}
+
+	content, err := store.ReadContent(art)
+	if err != nil {
+		return nil, err
+	}
+
+	info := ArtifactInfo{
+		UUID:        art.UUID,
+		Label:       art.Label,
+		Type:        string(art.ArtifactType),
+		SHA256:      art.ContentHash,
+		SizeBytes:   art.ByteSize,
+		SessionUUID: art.SessionUUID,
+		CreatedAt:   art.CreatedAt.Format(time.RFC3339),
+	}
+	if art.RunUUID != nil {
+		info.RunUUID = *art.RunUUID
+	}
+
+	// Detect if content is text (valid UTF-8 JSON or text)
+	isText := json.Valid(content)
+	if !isText {
+		// Check if it's valid UTF-8 text
+		isText = true
+		for _, b := range content {
+			if b < 0x20 && b != '\n' && b != '\r' && b != '\t' {
+				isText = false
+				break
+			}
+		}
+	}
+
+	contentStr := string(content)
+	if !isText && len(content) > 4096 {
+		contentStr = contentStr[:4096] + "... (truncated)"
+	}
+
+	return &ArtifactContent{
+		ArtifactInfo: info,
+		Content:      contentStr,
+		IsText:       isText,
+	}, nil
+}
+
+func (s *Service) VerifyArtifacts() (*VerifyArtifactsResult, error) {
+	store := artifact.NewStore(s.engine.MetadataDB, s.engine.Workspace.Path, s.engine.Workspace.UUID)
+	valid, invalid, err := store.VerifyIntegrity()
+	if err != nil {
+		return nil, err
+	}
+	total := valid + len(invalid)
+	return &VerifyArtifactsResult{
+		Total:    total,
+		Valid:    valid,
+		Corrupt:  len(invalid),
+		AllValid: len(invalid) == 0,
+	}, nil
+}
+
+// --- Export operations ---
+
+// ExportRequest holds parameters for exporting a workspace.
+type ExportRequest struct {
+	Format string `json:"format"` // "json" or "markdown"
+}
+
+// ExportResult holds the export content.
+type ExportResult struct {
+	Content  string `json:"content"`
+	Format   string `json:"format"`
+	Filename string `json:"filename"`
+}
+
+func (s *Service) ExportWorkspace(req ExportRequest) (*ExportResult, error) {
+	format := req.Format
+	if format == "" {
+		format = "json"
+	}
+
+	wsUUID := s.engine.Workspace.UUID
+	ws := s.engine.Workspace
+
+	// Build JSON export content
+	export := map[string]any{
+		"format":       "stratus_evidence_bundle_v1",
+		"workspace_id": wsUUID,
+		"workspace":    map[string]any{"uuid": ws.UUID, "name": ws.Name, "description": ws.Description, "created_at": ws.CreatedAt.Format(time.RFC3339)},
+		"exported_at":  time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Gather identities
+	idRows, _ := s.engine.MetadataDB.Query(
+		"SELECT uuid, label, account_id, principal_arn, principal_type, source_type, acquired_at FROM identities WHERE workspace_uuid = ?", wsUUID)
+	if idRows != nil {
+		defer idRows.Close()
+		var ids []map[string]string
+		for idRows.Next() {
+			var u, l, a, p, pt, st, at string
+			idRows.Scan(&u, &l, &a, &p, &pt, &st, &at)
+			ids = append(ids, map[string]string{"uuid": u, "label": l, "account_id": a, "principal_arn": p, "principal_type": pt, "source_type": st, "acquired_at": at})
+		}
+		export["identities"] = ids
+	}
+
+	// Gather sessions
+	sessRows, _ := s.engine.MetadataDB.Query(
+		"SELECT uuid, session_name, region, health_status, created_at FROM sessions WHERE workspace_uuid = ?", wsUUID)
+	if sessRows != nil {
+		defer sessRows.Close()
+		var sess []map[string]string
+		for sessRows.Next() {
+			var u, n, r, h, c string
+			sessRows.Scan(&u, &n, &r, &h, &c)
+			sess = append(sess, map[string]string{"uuid": u, "session_name": n, "region": r, "health_status": h, "created_at": c})
+		}
+		export["sessions"] = sess
+	}
+
+	// Gather runs
+	runRows, _ := s.engine.MetadataDB.Query(
+		"SELECT uuid, module_id, status, started_at FROM module_runs WHERE workspace_uuid = ? ORDER BY started_at DESC", wsUUID)
+	if runRows != nil {
+		defer runRows.Close()
+		var runs []map[string]string
+		for runRows.Next() {
+			var u, m, st, sa string
+			runRows.Scan(&u, &m, &st, &sa)
+			runs = append(runs, map[string]string{"uuid": u, "module_id": m, "status": st, "started_at": sa})
+		}
+		export["runs"] = runs
+	}
+
+	// Graph snapshot
+	gs := graph.NewStore(s.engine.MetadataDB, wsUUID)
+	graphData, _ := gs.Snapshot()
+	if graphData != nil {
+		var graphParsed any
+		json.Unmarshal(graphData, &graphParsed)
+		export["graph"] = graphParsed
+	}
+
+	if format == "json" {
+		data, err := json.MarshalIndent(export, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return &ExportResult{
+			Content:  string(data),
+			Format:   "json",
+			Filename: fmt.Sprintf("stratus-export-%s.json", ws.Name),
+		}, nil
+	}
+
+	// Markdown format
+	var md string
+	md += "# STRATUS Evidence Report\n\n"
+	md += fmt.Sprintf("**Workspace:** %s (`%s`)\n\n", ws.Name, wsUUID[:8])
+	md += fmt.Sprintf("**Exported:** %s\n\n---\n\n", time.Now().UTC().Format("2006-01-02 15:04:05 UTC"))
+
+	data, _ := json.MarshalIndent(export, "", "  ")
+	md += "## Full Export Data\n\n```json\n" + string(data) + "\n```\n"
+
+	return &ExportResult{
+		Content:  md,
+		Format:   "markdown",
+		Filename: fmt.Sprintf("stratus-report-%s.md", ws.Name),
+	}, nil
+}
+
 // --- Scope operations ---
 
 // ScopeInfo is a transport-safe scope representation.
@@ -807,6 +1408,338 @@ func (s *Service) ImportSTSSession(req ImportSTSSessionRequest) (*ImportIAMKeyRe
 			AcquiredAt:    id.AcquiredAt.Format(time.RFC3339),
 		},
 		Session: sessionToInfo(sess),
+	}, nil
+}
+
+// --- Additional identity import operations ---
+
+// ImportIMDSRequest holds parameters for importing IMDS-captured credentials.
+type ImportIMDSRequest struct {
+	AccessKey    string `json:"access_key"`
+	SecretKey    string `json:"secret_key"`
+	SessionToken string `json:"session_token"`
+	Expiry       string `json:"expiry,omitempty"` // RFC3339
+	RoleName     string `json:"role_name,omitempty"`
+	Label        string `json:"label"`
+	Region       string `json:"region"`
+}
+
+func (s *Service) ImportIMDS(req ImportIMDSRequest) (*ImportIAMKeyResult, error) {
+	broker := identity.NewBroker(s.engine.MetadataDB, s.engine.Vault, s.engine.AuditLogger, s.engine.Workspace.UUID)
+
+	region := req.Region
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	var expiryTime *time.Time
+	if req.Expiry != "" {
+		t, err := time.Parse(time.RFC3339, req.Expiry)
+		if err == nil {
+			expiryTime = &t
+		}
+	}
+
+	id, sess, err := broker.ImportIMDSCapture(identity.IMDSCaptureInput{
+		AccessKey:    req.AccessKey,
+		SecretKey:    req.SecretKey,
+		SessionToken: req.SessionToken,
+		Expiry:       expiryTime,
+		RoleName:     req.RoleName,
+		Label:        req.Label,
+		Region:       region,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &ImportIAMKeyResult{
+		Identity: IdentityInfo{
+			UUID:          id.UUID,
+			Label:         id.Label,
+			SourceType:    string(id.SourceType),
+			PrincipalARN:  id.PrincipalARN,
+			PrincipalType: string(id.PrincipalType),
+			AccountID:     id.AccountID,
+			AcquiredAt:    id.AcquiredAt.Format(time.RFC3339),
+		},
+		Session: sessionToInfo(sess),
+	}, nil
+}
+
+// ImportCredProcessRequest holds parameters for importing credential_process output.
+type ImportCredProcessRequest struct {
+	Command      string `json:"command"`
+	AccessKey    string `json:"access_key,omitempty"`
+	SecretKey    string `json:"secret_key,omitempty"`
+	SessionToken string `json:"session_token,omitempty"`
+	Expiry       string `json:"expiry,omitempty"` // RFC3339
+	Label        string `json:"label"`
+	Region       string `json:"region"`
+}
+
+func (s *Service) ImportCredProcess(req ImportCredProcessRequest) (*ImportIAMKeyResult, error) {
+	broker := identity.NewBroker(s.engine.MetadataDB, s.engine.Vault, s.engine.AuditLogger, s.engine.Workspace.UUID)
+
+	region := req.Region
+	if region == "" {
+		region = "us-east-1"
+	}
+	label := req.Label
+	if label == "" {
+		label = "cred-process"
+	}
+
+	var expiryTime *time.Time
+	if req.Expiry != "" {
+		t, err := time.Parse(time.RFC3339, req.Expiry)
+		if err == nil {
+			expiryTime = &t
+		}
+	}
+
+	id, sess, err := broker.ImportCredProcess(identity.CredProcessInput{
+		Command:      req.Command,
+		AccessKey:    req.AccessKey,
+		SecretKey:    req.SecretKey,
+		SessionToken: req.SessionToken,
+		Expiry:       expiryTime,
+		Label:        label,
+		Region:       region,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	result := &ImportIAMKeyResult{
+		Identity: IdentityInfo{
+			UUID:          id.UUID,
+			Label:         id.Label,
+			SourceType:    string(id.SourceType),
+			PrincipalARN:  id.PrincipalARN,
+			PrincipalType: string(id.PrincipalType),
+			AccountID:     id.AccountID,
+			AcquiredAt:    id.AcquiredAt.Format(time.RFC3339),
+		},
+	}
+	if sess != nil {
+		result.Session = sessionToInfo(sess)
+	}
+	return result, nil
+}
+
+// ImportAssumeRoleRequest holds parameters for importing an assume-role identity config.
+type ImportAssumeRoleRequest struct {
+	RoleARN    string `json:"role_arn"`
+	ExternalID string `json:"external_id,omitempty"`
+	Label      string `json:"label"`
+}
+
+// ImportIdentityOnlyResult holds the result when only an identity is created (no session).
+type ImportIdentityOnlyResult struct {
+	Identity IdentityInfo `json:"identity"`
+}
+
+func (s *Service) ImportAssumeRoleIdentity(req ImportAssumeRoleRequest) (*ImportIdentityOnlyResult, error) {
+	broker := identity.NewBroker(s.engine.MetadataDB, s.engine.Vault, s.engine.AuditLogger, s.engine.Workspace.UUID)
+
+	label := req.Label
+	if label == "" {
+		// Extract role name from ARN
+		parts := splitARNParts(req.RoleARN)
+		if len(parts) > 0 {
+			label = "role-" + parts[len(parts)-1]
+		} else {
+			label = "assume-role"
+		}
+	}
+
+	id, err := broker.ImportAssumeRole(identity.AssumeRoleInput{
+		RoleARN:    req.RoleARN,
+		ExternalID: req.ExternalID,
+		Label:      label,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &ImportIdentityOnlyResult{
+		Identity: IdentityInfo{
+			UUID:          id.UUID,
+			Label:         id.Label,
+			SourceType:    string(id.SourceType),
+			PrincipalARN:  id.PrincipalARN,
+			PrincipalType: string(id.PrincipalType),
+			AccountID:     id.AccountID,
+			AcquiredAt:    id.AcquiredAt.Format(time.RFC3339),
+		},
+	}, nil
+}
+
+// ImportWebIdentityRequest holds parameters for importing a web identity.
+type ImportWebIdentityRequest struct {
+	RoleARN  string `json:"role_arn"`
+	RawToken string `json:"raw_token"`
+	Label    string `json:"label"`
+}
+
+func (s *Service) ImportWebIdentity(req ImportWebIdentityRequest) (*ImportIdentityOnlyResult, error) {
+	broker := identity.NewBroker(s.engine.MetadataDB, s.engine.Vault, s.engine.AuditLogger, s.engine.Workspace.UUID)
+
+	label := req.Label
+	if label == "" {
+		label = "web-identity"
+	}
+
+	id, err := broker.ImportWebIdentity(identity.WebIdentityInput{
+		RoleARN:  req.RoleARN,
+		RawToken: req.RawToken,
+		Label:    label,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &ImportIdentityOnlyResult{
+		Identity: IdentityInfo{
+			UUID:          id.UUID,
+			Label:         id.Label,
+			SourceType:    string(id.SourceType),
+			PrincipalARN:  id.PrincipalARN,
+			PrincipalType: string(id.PrincipalType),
+			AccountID:     id.AccountID,
+			AcquiredAt:    id.AcquiredAt.Format(time.RFC3339),
+		},
+	}, nil
+}
+
+// splitARNParts splits a string by "/" for role name extraction.
+func splitARNParts(s string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '/' {
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
+}
+
+// --- AWS Explorer operations ---
+
+// AWSExplorerRequest holds parameters for AWS service exploration.
+type AWSExplorerRequest struct {
+	Service string         `json:"service"` // iam, s3, ec2, lambda, secrets, ssm, cloudtrail, kms, logs
+	Action  string         `json:"action"`  // users, roles, policies, buckets, instances, etc.
+	Region  string         `json:"region,omitempty"`
+	Params  map[string]any `json:"params,omitempty"`
+}
+
+// AWSExplorerResult holds the result of an AWS exploration.
+type AWSExplorerResult struct {
+	Service string `json:"service"`
+	Action  string `json:"action"`
+	Data    any    `json:"data"`
+	RawJSON string `json:"raw_json"`
+}
+
+func (s *Service) AWSExplore(ctx context.Context, req AWSExplorerRequest) (*AWSExplorerResult, error) {
+	creds, sess, err := stratusaws.ResolveActiveCredentials(s.engine)
+	if err != nil {
+		return nil, err
+	}
+
+	// Override region if specified
+	if req.Region != "" {
+		creds.Region = req.Region
+	}
+
+	// Enforce scope
+	checker := scope.NewChecker(s.engine.Workspace.ScopeConfig)
+	if err := checker.CheckRegion(creds.Region); err != nil {
+		return nil, fmt.Errorf("scope violation: %w", err)
+	}
+
+	factory := stratusaws.NewClientFactoryWithAudit(s.engine.Logger, s.engine.AuditLogger, sess.UUID)
+
+	var data any
+	key := req.Service + "." + req.Action
+
+	switch key {
+	// IAM
+	case "iam.users":
+		data, err = factory.ListIAMUsers(ctx, creds)
+	case "iam.roles":
+		data, err = factory.ListIAMRoles(ctx, creds)
+	case "iam.policies":
+		data, err = factory.ListIAMPolicies(ctx, creds, true)
+	case "iam.user-detail":
+		userName, _ := req.Params["user_name"].(string)
+		if userName == "" {
+			return nil, fmt.Errorf("user_name parameter required")
+		}
+		data, err = factory.GetIAMUserDetail(ctx, creds, userName)
+	case "iam.role-detail":
+		roleName, _ := req.Params["role_name"].(string)
+		if roleName == "" {
+			return nil, fmt.Errorf("role_name parameter required")
+		}
+		data, err = factory.GetIAMRoleDetail(ctx, creds, roleName)
+	// S3
+	case "s3.buckets":
+		data, err = factory.ListS3Buckets(ctx, creds)
+	case "s3.bucket-policy":
+		bucket, _ := req.Params["bucket"].(string)
+		if bucket == "" {
+			return nil, fmt.Errorf("bucket parameter required")
+		}
+		data, err = factory.GetBucketPolicy(ctx, creds, bucket)
+	// EC2
+	case "ec2.instances":
+		data, err = factory.ListEC2Instances(ctx, creds)
+	case "ec2.security-groups":
+		data, err = factory.ListSecurityGroups(ctx, creds)
+	case "ec2.vpcs":
+		data, err = factory.ListVPCs(ctx, creds)
+	// Lambda
+	case "lambda.functions":
+		data, err = factory.ListLambdaFunctions(ctx, creds)
+	// Secrets Manager
+	case "secrets.list":
+		data, err = factory.ListSecrets(ctx, creds)
+	// SSM
+	case "ssm.parameters":
+		data, err = factory.ListSSMParameters(ctx, creds)
+	// CloudTrail
+	case "cloudtrail.events":
+		var maxResults int32 = 50
+		data, err = factory.LookupCloudTrailEvents(ctx, creds, maxResults)
+	// KMS
+	case "kms.keys":
+		data, err = factory.ListKMSKeys(ctx, creds)
+	// CloudWatch Logs
+	case "logs.groups":
+		prefix, _ := req.Params["prefix"].(string)
+		data, err = factory.ListLogGroups(ctx, creds, prefix)
+	// Regions
+	case "ec2.regions":
+		data, err = factory.ListRegions(ctx, creds)
+	default:
+		return nil, fmt.Errorf("unknown action: %s.%s", req.Service, req.Action)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	rawJSON, _ := json.MarshalIndent(data, "", "  ")
+	return &AWSExplorerResult{
+		Service: req.Service,
+		Action:  req.Action,
+		Data:    data,
+		RawJSON: string(rawJSON),
 	}, nil
 }
 

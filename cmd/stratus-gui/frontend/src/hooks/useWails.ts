@@ -8,6 +8,12 @@ import type {
   RunModuleRequest, RunModuleResult, RunInfo, AuditEntry,
   ScopeInfo, NoteInfo, AddNoteRequest,
   ImportIAMKeyRequest, ImportSTSSessionRequest, ImportResult,
+  CreateWorkspaceRequest, UpdateScopeRequest, ScopeCheckResult,
+  WhoamiResult, SessionHealthResult, PivotAssumeRequest, PivotAssumeResult,
+  ArtifactInfo, ArtifactContent, VerifyArtifactsResult, ExportRequest, ExportResult,
+  ImportIMDSRequest, ImportCredProcessRequest, ImportAssumeRoleRequest,
+  ImportWebIdentityRequest, ImportIdentityOnlyResult,
+  AWSExplorerRequest, AWSExplorerResult,
 } from '../types/api';
 
 // At runtime, Wails injects window.go.main.App
@@ -37,6 +43,10 @@ export const getIdentity = (uuidOrLabel: string) => call<IdentityInfo>('GetIdent
 export const archiveIdentity = (uuidOrLabel: string) => call<void>('ArchiveIdentity', uuidOrLabel);
 export const importIAMKey = (req: ImportIAMKeyRequest) => call<ImportResult>('ImportIAMKey', req);
 export const importSTSSession = (req: ImportSTSSessionRequest) => call<ImportResult>('ImportSTSSession', req);
+export const importIMDS = (req: ImportIMDSRequest) => call<ImportResult>('ImportIMDS', req);
+export const importCredProcess = (req: ImportCredProcessRequest) => call<ImportResult>('ImportCredProcess', req);
+export const importAssumeRoleIdentity = (req: ImportAssumeRoleRequest) => call<ImportIdentityOnlyResult>('ImportAssumeRoleIdentity', req);
+export const importWebIdentity = (req: ImportWebIdentityRequest) => call<ImportIdentityOnlyResult>('ImportWebIdentity', req);
 
 // --- Sessions ---
 export const listSessions = () => call<SessionInfo[]>('ListSessions');
@@ -76,3 +86,29 @@ export const getNote = (uuid: string) => call<NoteInfo>('GetNote', uuid);
 export const addNote = (req: AddNoteRequest) => call<NoteInfo>('AddNote', req);
 export const updateNote = (uuid: string, content: string) => call<void>('UpdateNote', uuid, content);
 export const deleteNote = (uuid: string) => call<void>('DeleteNote', uuid);
+
+// --- Workspace creation ---
+export const createWorkspace = (req: CreateWorkspaceRequest) => call<WorkspaceInfo>('CreateWorkspace', req);
+
+// --- Scope management ---
+export const updateScope = (req: UpdateScopeRequest) => call<ScopeInfo>('UpdateScope', req);
+export const checkScope = (region: string, accountID: string) => call<ScopeCheckResult>('CheckScope', region, accountID);
+
+// --- Session intelligence ---
+export const sessionWhoami = (uuid: string) => call<WhoamiResult>('SessionWhoami', uuid);
+export const sessionHealthCheck = () => call<SessionHealthResult[]>('SessionHealthCheck');
+export const refreshSession = (uuid: string) => call<SessionInfo>('RefreshSession', uuid);
+
+// --- Pivot ---
+export const pivotAssume = (req: PivotAssumeRequest) => call<PivotAssumeResult>('PivotAssume', req);
+
+// --- Artifacts ---
+export const listArtifacts = (runFilter: string, typeFilter: string) => call<ArtifactInfo[]>('ListArtifacts', runFilter, typeFilter);
+export const getArtifact = (uuid: string) => call<ArtifactContent>('GetArtifact', uuid);
+export const verifyArtifacts = () => call<VerifyArtifactsResult>('VerifyArtifacts');
+
+// --- Export ---
+export const exportWorkspace = (req: ExportRequest) => call<ExportResult>('ExportWorkspace', req);
+
+// --- AWS Explorer ---
+export const awsExplore = (req: AWSExplorerRequest) => call<AWSExplorerResult>('AWSExplore', req);

@@ -7,7 +7,7 @@ import { Badge } from '../components/shared/Badge';
 import { LoadingState, ErrorBanner, Spinner } from '../components/shared/Spinner';
 import { formatDate, shortUUID, truncateARN, titleCase } from '../lib/format';
 
-type ImportType = 'iam-key' | 'sts-session';
+type ImportType = 'iam-key' | 'sts-session' | 'assume-role' | 'imds-capture' | 'web-identity' | 'cred-process';
 
 export function Identities() {
   const [identities, setIdentities] = useState<IdentityInfo[]>([]);
@@ -25,6 +25,12 @@ export function Identities() {
   const [importSessionToken, setImportSessionToken] = useState('');
   const [importLabel, setImportLabel] = useState('');
   const [importRegion, setImportRegion] = useState('us-east-1');
+  const [importRoleArn, setImportRoleArn] = useState('');
+  const [importExternalId, setImportExternalId] = useState('');
+  const [importRawToken, setImportRawToken] = useState('');
+  const [importCommand, setImportCommand] = useState('');
+  const [importRoleName, setImportRoleName] = useState('');
+  const [importExpiry, setImportExpiry] = useState('');
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState('');
 
@@ -63,18 +69,42 @@ export function Identities() {
     setImportSessionToken('');
     setImportLabel('');
     setImportRegion('us-east-1');
+    setImportRoleArn('');
+    setImportExternalId('');
+    setImportRawToken('');
+    setImportCommand('');
+    setImportRoleName('');
+    setImportExpiry('');
     setImportError('');
     setImporting(false);
   };
 
   const handleImport = async () => {
     setImportError('');
-    if (!importAccessKey || !importSecretKey) {
+
+    // Validation per type
+    if (importType === 'iam-key' && (!importAccessKey || !importSecretKey)) {
       setImportError('Access key and secret key are required');
       return;
     }
-    if (importType === 'sts-session' && !importSessionToken) {
-      setImportError('Session token is required for STS sessions');
+    if (importType === 'sts-session' && (!importAccessKey || !importSecretKey || !importSessionToken)) {
+      setImportError('Access key, secret key, and session token are required');
+      return;
+    }
+    if (importType === 'assume-role' && !importRoleArn) {
+      setImportError('Role ARN is required');
+      return;
+    }
+    if (importType === 'imds-capture' && (!importAccessKey || !importSecretKey || !importSessionToken)) {
+      setImportError('Access key, secret key, and session token are required');
+      return;
+    }
+    if (importType === 'web-identity' && (!importRoleArn || !importRawToken)) {
+      setImportError('Role ARN and token are required');
+      return;
+    }
+    if (importType === 'cred-process' && !importCommand) {
+      setImportError('Command is required');
       return;
     }
 
@@ -87,11 +117,43 @@ export function Identities() {
           label: importLabel,
           region: importRegion,
         });
-      } else {
+      } else if (importType === 'sts-session') {
         await api.importSTSSession({
           access_key: importAccessKey,
           secret_key: importSecretKey,
           session_token: importSessionToken,
+          label: importLabel,
+          region: importRegion,
+        });
+      } else if (importType === 'assume-role') {
+        await api.importAssumeRoleIdentity({
+          role_arn: importRoleArn,
+          external_id: importExternalId || undefined,
+          label: importLabel,
+        });
+      } else if (importType === 'imds-capture') {
+        await api.importIMDS({
+          access_key: importAccessKey,
+          secret_key: importSecretKey,
+          session_token: importSessionToken,
+          expiry: importExpiry || undefined,
+          role_name: importRoleName || undefined,
+          label: importLabel,
+          region: importRegion,
+        });
+      } else if (importType === 'web-identity') {
+        await api.importWebIdentity({
+          role_arn: importRoleArn,
+          raw_token: importRawToken,
+          label: importLabel,
+        });
+      } else if (importType === 'cred-process') {
+        await api.importCredProcess({
+          command: importCommand,
+          access_key: importAccessKey || undefined,
+          secret_key: importSecretKey || undefined,
+          session_token: importSessionToken || undefined,
+          expiry: importExpiry || undefined,
           label: importLabel,
           region: importRegion,
         });
@@ -100,7 +162,8 @@ export function Identities() {
       resetImportForm();
       await loadData();
     } catch (e: any) {
-      setImportError(e?.message || 'Import failed');
+      const msg = typeof e === 'string' ? e : (e?.message || 'Import failed');
+      setImportError(msg);
     }
     setImporting(false);
   };
@@ -212,31 +275,31 @@ export function Identities() {
           {/* Type selector */}
           <div>
             <label className="block text-xs text-stratus-muted uppercase mb-2">Credential Type</label>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setImportType('iam-key')}
-                className={`flex-1 px-3 py-2 rounded border text-sm transition-colors ${
-                  importType === 'iam-key'
-                    ? 'border-stratus-accent bg-stratus-accent/10 text-stratus-accent'
-                    : 'border-stratus-border text-stratus-muted hover:border-stratus-accent/50'
-                }`}
-              >
-                IAM Key
-              </button>
-              <button
-                onClick={() => setImportType('sts-session')}
-                className={`flex-1 px-3 py-2 rounded border text-sm transition-colors ${
-                  importType === 'sts-session'
-                    ? 'border-stratus-accent bg-stratus-accent/10 text-stratus-accent'
-                    : 'border-stratus-border text-stratus-muted hover:border-stratus-accent/50'
-                }`}
-              >
-                STS Session
-              </button>
+            <div className="grid grid-cols-3 gap-2">
+              {([
+                ['iam-key', 'IAM Key'],
+                ['sts-session', 'STS Session'],
+                ['assume-role', 'Assume Role'],
+                ['imds-capture', 'IMDS Capture'],
+                ['web-identity', 'Web Identity'],
+                ['cred-process', 'Cred Process'],
+              ] as [ImportType, string][]).map(([type, label]) => (
+                <button
+                  key={type}
+                  onClick={() => setImportType(type)}
+                  className={`px-3 py-2 rounded border text-xs transition-colors ${
+                    importType === type
+                      ? 'border-stratus-accent bg-stratus-accent/10 text-stratus-accent'
+                      : 'border-stratus-border text-stratus-muted hover:border-stratus-accent/50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* Label */}
+          {/* Label — always shown */}
           <div>
             <label className="block text-xs text-stratus-muted uppercase mb-1">Label</label>
             <input
@@ -248,39 +311,41 @@ export function Identities() {
             />
           </div>
 
-          {/* Access Key */}
-          <div>
-            <label className="block text-xs text-stratus-muted uppercase mb-1">
-              Access Key ID <span className="text-red-400">*</span>
-            </label>
-            <input
-              type="text"
-              className="input-field font-mono"
-              placeholder="AKIAXXXXXXXXXXXXXXXX"
-              value={importAccessKey}
-              onChange={e => setImportAccessKey(e.target.value)}
-            />
-          </div>
+          {/* --- IAM Key / STS / IMDS / Cred Process fields --- */}
+          {(importType === 'iam-key' || importType === 'sts-session' || importType === 'imds-capture' || importType === 'cred-process') && (
+            <>
+              <div>
+                <label className="block text-xs text-stratus-muted uppercase mb-1">
+                  Access Key ID {importType !== 'cred-process' && <span className="text-red-400">*</span>}
+                </label>
+                <input
+                  type="text"
+                  className="input-field font-mono"
+                  placeholder="AKIAXXXXXXXXXXXXXXXX"
+                  value={importAccessKey}
+                  onChange={e => setImportAccessKey(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-stratus-muted uppercase mb-1">
+                  Secret Access Key {importType !== 'cred-process' && <span className="text-red-400">*</span>}
+                </label>
+                <input
+                  type="password"
+                  className="input-field font-mono"
+                  placeholder="Enter secret key..."
+                  value={importSecretKey}
+                  onChange={e => setImportSecretKey(e.target.value)}
+                />
+              </div>
+            </>
+          )}
 
-          {/* Secret Key */}
-          <div>
-            <label className="block text-xs text-stratus-muted uppercase mb-1">
-              Secret Access Key <span className="text-red-400">*</span>
-            </label>
-            <input
-              type="password"
-              className="input-field font-mono"
-              placeholder="Enter secret key..."
-              value={importSecretKey}
-              onChange={e => setImportSecretKey(e.target.value)}
-            />
-          </div>
-
-          {/* Session Token (STS only) */}
-          {importType === 'sts-session' && (
+          {/* Session Token (STS, IMDS, Cred Process) */}
+          {(importType === 'sts-session' || importType === 'imds-capture' || importType === 'cred-process') && (
             <div>
               <label className="block text-xs text-stratus-muted uppercase mb-1">
-                Session Token <span className="text-red-400">*</span>
+                Session Token {importType !== 'cred-process' && <span className="text-red-400">*</span>}
               </label>
               <textarea
                 className="input-field font-mono text-xs h-24 resize-none"
@@ -291,16 +356,110 @@ export function Identities() {
             </div>
           )}
 
-          {/* Region */}
-          <div>
-            <label className="block text-xs text-stratus-muted uppercase mb-1">Region</label>
-            <input
-              type="text"
-              className="input-field"
-              value={importRegion}
-              onChange={e => setImportRegion(e.target.value)}
-            />
-          </div>
+          {/* Expiry (STS, IMDS, Cred Process) */}
+          {(importType === 'sts-session' || importType === 'imds-capture' || importType === 'cred-process') && (
+            <div>
+              <label className="block text-xs text-stratus-muted uppercase mb-1">Expiry (RFC3339)</label>
+              <input
+                type="text"
+                className="input-field font-mono text-xs"
+                placeholder="2024-01-01T00:00:00Z"
+                value={importExpiry}
+                onChange={e => setImportExpiry(e.target.value)}
+              />
+            </div>
+          )}
+
+          {/* IMDS-specific: Role Name */}
+          {importType === 'imds-capture' && (
+            <div>
+              <label className="block text-xs text-stratus-muted uppercase mb-1">EC2 Role Name</label>
+              <input
+                type="text"
+                className="input-field"
+                placeholder="e.g. my-ec2-role"
+                value={importRoleName}
+                onChange={e => setImportRoleName(e.target.value)}
+              />
+            </div>
+          )}
+
+          {/* Role ARN (Assume Role, Web Identity) */}
+          {(importType === 'assume-role' || importType === 'web-identity') && (
+            <div>
+              <label className="block text-xs text-stratus-muted uppercase mb-1">
+                Role ARN <span className="text-red-400">*</span>
+              </label>
+              <input
+                type="text"
+                className="input-field font-mono text-xs"
+                placeholder="arn:aws:iam::123456789012:role/RoleName"
+                value={importRoleArn}
+                onChange={e => setImportRoleArn(e.target.value)}
+              />
+            </div>
+          )}
+
+          {/* External ID (Assume Role) */}
+          {importType === 'assume-role' && (
+            <div>
+              <label className="block text-xs text-stratus-muted uppercase mb-1">External ID</label>
+              <input
+                type="text"
+                className="input-field font-mono text-xs"
+                placeholder="Optional external ID"
+                value={importExternalId}
+                onChange={e => setImportExternalId(e.target.value)}
+              />
+            </div>
+          )}
+
+          {/* Raw Token (Web Identity) */}
+          {importType === 'web-identity' && (
+            <div>
+              <label className="block text-xs text-stratus-muted uppercase mb-1">
+                OIDC/JWT Token <span className="text-red-400">*</span>
+              </label>
+              <textarea
+                className="input-field font-mono text-xs h-24 resize-none"
+                placeholder="Paste OIDC/JWT token..."
+                value={importRawToken}
+                onChange={e => setImportRawToken(e.target.value)}
+              />
+            </div>
+          )}
+
+          {/* Command (Cred Process) */}
+          {importType === 'cred-process' && (
+            <div>
+              <label className="block text-xs text-stratus-muted uppercase mb-1">
+                Command <span className="text-red-400">*</span>
+              </label>
+              <input
+                type="text"
+                className="input-field font-mono text-xs"
+                placeholder="e.g. /usr/local/bin/aws-cred-helper"
+                value={importCommand}
+                onChange={e => setImportCommand(e.target.value)}
+              />
+              <p className="text-xs text-stratus-muted mt-1">
+                Paste pre-captured credentials above, or store command reference only.
+              </p>
+            </div>
+          )}
+
+          {/* Region (not shown for assume-role, web-identity) */}
+          {importType !== 'assume-role' && importType !== 'web-identity' && (
+            <div>
+              <label className="block text-xs text-stratus-muted uppercase mb-1">Region</label>
+              <input
+                type="text"
+                className="input-field"
+                value={importRegion}
+                onChange={e => setImportRegion(e.target.value)}
+              />
+            </div>
+          )}
 
           {importError && <ErrorBanner message={importError} />}
 

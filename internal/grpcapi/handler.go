@@ -39,7 +39,12 @@ func NewHandler(svc *Service) *Handler {
 	h := &Handler{service: svc}
 	h.dispatch = map[string]handlerFunc{
 		// Workspace
-		"workspace.get": h.handleGetWorkspace,
+		"workspace.get":    h.handleGetWorkspace,
+		"workspace.create": h.handleCreateWorkspace,
+
+		// Scope
+		"scope.update": h.handleUpdateScope,
+		"scope.check":  h.handleCheckScope,
 
 		// Identity
 		"identity.list":    h.handleListIdentities,
@@ -54,6 +59,10 @@ func NewHandler(svc *Service) *Handler {
 		"session.pop":        h.handlePopSession,
 		"session.peek":       h.handlePeekStack,
 		"session.expire":     h.handleExpireSession,
+		"session.whoami":     h.handleSessionWhoami,
+		"session.health":    h.handleSessionHealthCheck,
+		"session.refresh":   h.handleRefreshSession,
+		"pivot.assume":      h.handlePivotAssume,
 
 		// Graph
 		"graph.find_path": h.handleFindPath,
@@ -73,12 +82,27 @@ func NewHandler(svc *Service) *Handler {
 		// Graph snapshot
 		"graph.snapshot": h.handleGetGraphSnapshot,
 
+		// Artifacts
+		"artifact.list":   h.handleListArtifacts,
+		"artifact.get":    h.handleGetArtifact,
+		"artifact.verify": h.handleVerifyArtifacts,
+
+		// Export
+		"export.workspace": h.handleExportWorkspace,
+
 		// Scope
 		"scope.info": h.handleGetScopeInfo,
 
 		// Identity import
-		"identity.import_iam_key":     h.handleImportIAMKey,
-		"identity.import_sts_session": h.handleImportSTSSession,
+		"identity.import_iam_key":      h.handleImportIAMKey,
+		"identity.import_sts_session":  h.handleImportSTSSession,
+		"identity.import_imds":         h.handleImportIMDS,
+		"identity.import_cred_process": h.handleImportCredProcess,
+		"identity.import_assume_role":  h.handleImportAssumeRoleIdentity,
+		"identity.import_web_identity": h.handleImportWebIdentity,
+
+		// AWS Explorer
+		"aws.explore": h.handleAWSExplore,
 
 		// Notes
 		"note.list":   h.handleListNotes,
@@ -378,4 +402,138 @@ func (h *Handler) handleDeleteNote(_ context.Context, params json.RawMessage) (a
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	return map[string]bool{"success": true}, h.service.DeleteNote(p.UUID)
+}
+
+func (h *Handler) handleCreateWorkspace(_ context.Context, params json.RawMessage) (any, error) {
+	var req CreateWorkspaceRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	_, info, err := CreateWorkspace(req)
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+func (h *Handler) handleUpdateScope(_ context.Context, params json.RawMessage) (any, error) {
+	var req UpdateScopeRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.UpdateScope(req)
+}
+
+type scopeCheckParams struct {
+	Region    string `json:"region"`
+	AccountID string `json:"account_id"`
+}
+
+func (h *Handler) handleCheckScope(_ context.Context, params json.RawMessage) (any, error) {
+	var p scopeCheckParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.CheckScope(p.Region, p.AccountID), nil
+}
+
+type artifactFilterParams struct {
+	RunUUID    string `json:"run_uuid"`
+	TypeFilter string `json:"type_filter"`
+}
+
+func (h *Handler) handleListArtifacts(_ context.Context, params json.RawMessage) (any, error) {
+	var p artifactFilterParams
+	if params != nil {
+		json.Unmarshal(params, &p)
+	}
+	return h.service.ListArtifacts(p.RunUUID, p.TypeFilter)
+}
+
+func (h *Handler) handleGetArtifact(_ context.Context, params json.RawMessage) (any, error) {
+	var p uuidParam
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.GetArtifact(p.UUID)
+}
+
+func (h *Handler) handleVerifyArtifacts(_ context.Context, _ json.RawMessage) (any, error) {
+	return h.service.VerifyArtifacts()
+}
+
+func (h *Handler) handleExportWorkspace(_ context.Context, params json.RawMessage) (any, error) {
+	var req ExportRequest
+	if params != nil {
+		json.Unmarshal(params, &req)
+	}
+	return h.service.ExportWorkspace(req)
+}
+
+func (h *Handler) handleSessionWhoami(_ context.Context, params json.RawMessage) (any, error) {
+	var p uuidParam
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.SessionWhoami(p.UUID)
+}
+
+func (h *Handler) handleSessionHealthCheck(_ context.Context, _ json.RawMessage) (any, error) {
+	return h.service.SessionHealthCheck()
+}
+
+func (h *Handler) handleRefreshSession(_ context.Context, params json.RawMessage) (any, error) {
+	var p uuidParam
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.RefreshSession(p.UUID)
+}
+
+func (h *Handler) handlePivotAssume(_ context.Context, params json.RawMessage) (any, error) {
+	var req PivotAssumeRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.PivotAssume(req)
+}
+
+func (h *Handler) handleAWSExplore(ctx context.Context, params json.RawMessage) (any, error) {
+	var req AWSExplorerRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.AWSExplore(ctx, req)
+}
+
+func (h *Handler) handleImportIMDS(_ context.Context, params json.RawMessage) (any, error) {
+	var req ImportIMDSRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.ImportIMDS(req)
+}
+
+func (h *Handler) handleImportCredProcess(_ context.Context, params json.RawMessage) (any, error) {
+	var req ImportCredProcessRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.ImportCredProcess(req)
+}
+
+func (h *Handler) handleImportAssumeRoleIdentity(_ context.Context, params json.RawMessage) (any, error) {
+	var req ImportAssumeRoleRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.ImportAssumeRoleIdentity(req)
+}
+
+func (h *Handler) handleImportWebIdentity(_ context.Context, params json.RawMessage) (any, error) {
+	var req ImportWebIdentityRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.ImportWebIdentity(req)
 }

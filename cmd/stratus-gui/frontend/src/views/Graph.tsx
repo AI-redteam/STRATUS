@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { GraphSnapshot, GraphEdgeInfo } from '../types/api';
+import type { GraphSnapshot, GraphEdgeInfo, PivotAssumeResult } from '../types/api';
 import * as api from '../hooks/useWails';
 import { ForceGraph, GraphNode, GraphLink } from '../lib/graph/ForceGraph';
 import { nodeLegend, edgeLegend } from '../lib/graph/graphColors';
 import { Badge } from '../components/shared/Badge';
-import { LoadingState, ErrorBanner } from '../components/shared/Spinner';
+import { LoadingState, ErrorBanner, Spinner } from '../components/shared/Spinner';
 
 export function Graph() {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -20,6 +20,16 @@ export function Graph() {
   const [pathFrom, setPathFrom] = useState('');
   const [pathTo, setPathTo] = useState('');
   const [pathResult, setPathResult] = useState<string | null>(null);
+
+  // Pivot assume dialog state
+  const [showAssume, setShowAssume] = useState(false);
+  const [assumeRoleARN, setAssumeRoleARN] = useState('');
+  const [assumeExternalID, setAssumeExternalID] = useState('');
+  const [assumeLabel, setAssumeLabel] = useState('');
+  const [assumeDuration, setAssumeDuration] = useState(3600);
+  const [assuming, setAssuming] = useState(false);
+  const [assumeResult, setAssumeResult] = useState<PivotAssumeResult | null>(null);
+  const [assumeError, setAssumeError] = useState('');
 
   useEffect(() => {
     loadGraph();
@@ -129,6 +139,42 @@ export function Graph() {
     setPathTo('');
   };
 
+  const openAssumeDialog = (nodeId: string) => {
+    setAssumeRoleARN(nodeId);
+    setAssumeExternalID('');
+    setAssumeLabel('');
+    setAssumeDuration(3600);
+    setAssumeResult(null);
+    setAssumeError('');
+    setShowAssume(true);
+  };
+
+  const handleAssume = async () => {
+    if (!assumeRoleARN) return;
+    setAssuming(true);
+    setAssumeError('');
+    setAssumeResult(null);
+    try {
+      const result = await api.pivotAssume({
+        role_arn: assumeRoleARN,
+        external_id: assumeExternalID || undefined,
+        label: assumeLabel || undefined,
+        duration_seconds: assumeDuration,
+      });
+      setAssumeResult(result);
+      // Refresh graph to show new edges
+      await loadGraph();
+    } catch (e: any) {
+      const msg = typeof e === 'string' ? e : (e?.message || 'Assume role failed');
+      setAssumeError(msg);
+    }
+    setAssuming(false);
+  };
+
+  const handleCopyARN = (text: string) => {
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+
   if (loading) return <LoadingState message="Loading graph..." />;
   if (error) return <ErrorBanner message={error} onRetry={loadGraph} />;
 
@@ -219,8 +265,8 @@ export function Graph() {
         </div>
 
         {/* Selected node sidebar */}
-        {selectedNode && (
-          <div className="absolute top-4 left-4 w-64 bg-stratus-surface/95 border border-stratus-border rounded-lg p-4 text-xs space-y-2">
+        {selectedNode && !showAssume && (
+          <div className="absolute top-4 left-4 w-72 bg-stratus-surface/95 border border-stratus-border rounded-lg p-4 text-xs space-y-2">
             <div className="flex items-center justify-between">
               <span className="font-semibold">Node Detail</span>
               <button onClick={() => setSelectedNode(null)} className="text-stratus-muted hover:text-stratus-text">
@@ -229,6 +275,24 @@ export function Graph() {
             </div>
             <div className="font-mono break-all">{selectedNode.id}</div>
             <div className="text-stratus-muted">{selectedNode.type}</div>
+
+            <div className="flex gap-1 mt-2">
+              <button
+                onClick={() => handleCopyARN(selectedNode.id)}
+                className="btn-ghost text-xs border border-stratus-border"
+              >
+                Copy ID
+              </button>
+              {(selectedNode.type === 'iam_role' || selectedNode.id.includes(':role/')) && (
+                <button
+                  onClick={() => openAssumeDialog(selectedNode.id)}
+                  className="btn-primary text-xs"
+                >
+                  Assume Role
+                </button>
+              )}
+            </div>
+
             {hops.length > 0 && (
               <div className="mt-2">
                 <div className="text-stratus-muted mb-1">Outgoing edges ({hops.length}):</div>
@@ -240,6 +304,88 @@ export function Graph() {
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        )}
+
+        {/* Assume Role dialog */}
+        {showAssume && (
+          <div className="absolute top-4 left-4 w-80 bg-stratus-surface/95 border border-stratus-border rounded-lg p-4 text-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold">Assume Role</span>
+              <button onClick={() => setShowAssume(false)} className="text-stratus-muted hover:text-stratus-text">
+                &times;
+              </button>
+            </div>
+
+            {assumeError && <ErrorBanner message={assumeError} />}
+
+            {assumeResult ? (
+              <div className="space-y-2">
+                <Badge label="Success" variant="green" />
+                <div><span className="text-stratus-muted">Role:</span> <span className="font-mono">{assumeResult.assumed_role}</span></div>
+                <div><span className="text-stratus-muted">Session:</span> <span className="font-mono">{assumeResult.session.uuid.slice(0, 8)}</span></div>
+                <div><span className="text-stratus-muted">Expiry:</span> {assumeResult.expiration}</div>
+                <button onClick={() => setShowAssume(false)} className="btn-ghost text-xs w-full mt-2">
+                  Close
+                </button>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-stratus-muted uppercase mb-1">Role ARN</label>
+                  <input
+                    type="text"
+                    className="input-field font-mono text-xs"
+                    value={assumeRoleARN}
+                    onChange={e => setAssumeRoleARN(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-stratus-muted uppercase mb-1">External ID</label>
+                  <input
+                    type="text"
+                    className="input-field text-xs"
+                    placeholder="Optional"
+                    value={assumeExternalID}
+                    onChange={e => setAssumeExternalID(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-stratus-muted uppercase mb-1">Label</label>
+                  <input
+                    type="text"
+                    className="input-field text-xs"
+                    placeholder="Optional session label"
+                    value={assumeLabel}
+                    onChange={e => setAssumeLabel(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-stratus-muted uppercase mb-1">Duration</label>
+                  <select
+                    className="input-field text-xs"
+                    value={assumeDuration}
+                    onChange={e => setAssumeDuration(Number(e.target.value))}
+                  >
+                    <option value={900}>15 minutes</option>
+                    <option value={1800}>30 minutes</option>
+                    <option value={3600}>1 hour</option>
+                    <option value={7200}>2 hours</option>
+                    <option value={14400}>4 hours</option>
+                    <option value={28800}>8 hours</option>
+                    <option value={43200}>12 hours</option>
+                  </select>
+                </div>
+                <button
+                  onClick={handleAssume}
+                  disabled={assuming || !assumeRoleARN}
+                  className="btn-primary w-full flex items-center justify-center gap-2"
+                >
+                  {assuming && <Spinner size="sm" />}
+                  {assuming ? 'Assuming...' : 'Assume Role'}
+                </button>
+              </>
             )}
           </div>
         )}

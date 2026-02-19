@@ -137,6 +137,41 @@ func (a *App) GetWorkspace() (*grpcapi.WorkspaceInfo, error) {
 	return a.service.GetWorkspace(), nil
 }
 
+func (a *App) CreateWorkspace(req grpcapi.CreateWorkspaceRequest) (*grpcapi.WorkspaceInfo, error) {
+	// Close any existing workspace first
+	if a.engine != nil {
+		a.engine.Close()
+		a.engine = nil
+		a.service = nil
+	}
+
+	engine, info, err := grpcapi.CreateWorkspace(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Auto-open the newly created workspace
+	a.engine = engine
+	a.service = grpcapi.NewService(engine)
+	return info, nil
+}
+
+// --- Scope management ---
+
+func (a *App) UpdateScope(req grpcapi.UpdateScopeRequest) (*grpcapi.ScopeInfo, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.UpdateScope(req)
+}
+
+func (a *App) CheckScope(region, accountID string) *grpcapi.ScopeCheckResult {
+	if a.service == nil {
+		return &grpcapi.ScopeCheckResult{InScope: false, Reason: "no workspace open"}
+	}
+	return a.service.CheckScope(region, accountID)
+}
+
 // --- Identity ---
 
 func (a *App) ListIdentities() ([]grpcapi.IdentityInfo, error) {
@@ -172,6 +207,34 @@ func (a *App) ArchiveIdentity(uuidOrLabel string) error {
 		return err
 	}
 	return a.service.ArchiveIdentity(uuidOrLabel)
+}
+
+func (a *App) ImportIMDS(req grpcapi.ImportIMDSRequest) (*grpcapi.ImportIAMKeyResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.ImportIMDS(req)
+}
+
+func (a *App) ImportCredProcess(req grpcapi.ImportCredProcessRequest) (*grpcapi.ImportIAMKeyResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.ImportCredProcess(req)
+}
+
+func (a *App) ImportAssumeRoleIdentity(req grpcapi.ImportAssumeRoleRequest) (*grpcapi.ImportIdentityOnlyResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.ImportAssumeRoleIdentity(req)
+}
+
+func (a *App) ImportWebIdentity(req grpcapi.ImportWebIdentityRequest) (*grpcapi.ImportIdentityOnlyResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.ImportWebIdentity(req)
 }
 
 // --- Sessions ---
@@ -225,6 +288,36 @@ func (a *App) ExpireSession(uuid string) error {
 	return a.service.ExpireSession(uuid)
 }
 
+// --- Session intelligence ---
+
+func (a *App) SessionWhoami(uuid string) (*grpcapi.WhoamiResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.SessionWhoami(uuid)
+}
+
+func (a *App) SessionHealthCheck() ([]grpcapi.SessionHealthResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.SessionHealthCheck()
+}
+
+func (a *App) RefreshSession(uuid string) (*grpcapi.SessionInfo, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.RefreshSession(uuid)
+}
+
+func (a *App) PivotAssume(req grpcapi.PivotAssumeRequest) (*grpcapi.PivotAssumeResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.PivotAssume(req)
+}
+
 // --- Graph ---
 
 func (a *App) FindPath(from, to string) (*grpcapi.GraphPathResult, error) {
@@ -253,6 +346,47 @@ func (a *App) GetGraphSnapshot() (string, error) {
 		return "", err
 	}
 	return a.service.GetGraphSnapshot()
+}
+
+// --- Artifacts ---
+
+func (a *App) ListArtifacts(runFilter, typeFilter string) ([]grpcapi.ArtifactInfo, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.ListArtifacts(runFilter, typeFilter)
+}
+
+func (a *App) GetArtifact(uuid string) (*grpcapi.ArtifactContent, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.GetArtifact(uuid)
+}
+
+func (a *App) VerifyArtifacts() (*grpcapi.VerifyArtifactsResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.VerifyArtifacts()
+}
+
+// --- Export ---
+
+func (a *App) ExportWorkspace(req grpcapi.ExportRequest) (*grpcapi.ExportResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.ExportWorkspace(req)
+}
+
+// --- AWS Explorer ---
+
+func (a *App) AWSExplore(req grpcapi.AWSExplorerRequest) (*grpcapi.AWSExplorerResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.AWSExplore(a.ctx, req)
 }
 
 // --- Modules ---

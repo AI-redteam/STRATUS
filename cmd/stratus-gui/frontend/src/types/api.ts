@@ -168,6 +168,137 @@ export interface AddNoteRequest {
   node_id?: string;
 }
 
+export interface CreateWorkspaceRequest {
+  name: string;
+  description: string;
+  passphrase: string;
+  accounts: string[];
+  regions: string[];
+  partition: string;
+}
+
+export interface UpdateScopeRequest {
+  add_accounts?: string[];
+  add_regions?: string[];
+  set_partition?: string;
+}
+
+export interface ScopeCheckResult {
+  in_scope: boolean;
+  reason: string;
+}
+
+export interface WhoamiResult {
+  arn: string;
+  account_id: string;
+  user_id: string;
+  verified: boolean;
+  error?: string;
+}
+
+export interface SessionHealthResult {
+  uuid: string;
+  label: string;
+  health: string;
+  detail: string;
+}
+
+export interface PivotAssumeRequest {
+  role_arn: string;
+  external_id?: string;
+  label?: string;
+  duration_seconds?: number;
+}
+
+export interface PivotAssumeResult {
+  session: SessionInfo;
+  assumed_role: string;
+  expiration: string;
+}
+
+export interface ArtifactInfo {
+  uuid: string;
+  label: string;
+  type: string;
+  sha256: string;
+  size_bytes: number;
+  run_uuid?: string;
+  session_uuid?: string;
+  created_at: string;
+}
+
+export interface ArtifactContent extends ArtifactInfo {
+  content: string;
+  is_text: boolean;
+}
+
+export interface VerifyArtifactsResult {
+  total: number;
+  valid: number;
+  corrupt: number;
+  all_valid: boolean;
+}
+
+export interface ExportRequest {
+  format: string;
+}
+
+export interface ExportResult {
+  content: string;
+  format: string;
+  filename: string;
+}
+
+export interface ImportIMDSRequest {
+  access_key: string;
+  secret_key: string;
+  session_token: string;
+  expiry?: string;
+  role_name?: string;
+  label: string;
+  region: string;
+}
+
+export interface ImportCredProcessRequest {
+  command: string;
+  access_key?: string;
+  secret_key?: string;
+  session_token?: string;
+  expiry?: string;
+  label: string;
+  region: string;
+}
+
+export interface ImportAssumeRoleRequest {
+  role_arn: string;
+  external_id?: string;
+  label: string;
+}
+
+export interface ImportWebIdentityRequest {
+  role_arn: string;
+  raw_token: string;
+  label: string;
+}
+
+export interface ImportIdentityOnlyResult {
+  identity: IdentityInfo;
+}
+
+export interface AWSExplorerRequest {
+  service: string;
+  action: string;
+  region?: string;
+  params?: Record<string, any>;
+}
+
+export interface AWSExplorerResult {
+  service: string;
+  action: string;
+  data: any;
+  raw_json: string;
+}
+
 export interface GraphSnapshot {
   workspace_uuid: string;
   timestamp: string;

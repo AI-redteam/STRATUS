@@ -12,12 +12,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/rs/zerolog"
@@ -174,6 +178,22 @@ func (f *ClientFactory) SecretsManagerClient(creds SessionCredentials) *secretsm
 
 func (f *ClientFactory) SSMClient(creds SessionCredentials) *ssm.Client {
 	return ssm.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) RDSClient(creds SessionCredentials) *rds.Client {
+	return rds.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) DynamoDBClient(creds SessionCredentials) *dynamodb.Client {
+	return dynamodb.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) ECSClient(creds SessionCredentials) *ecs.Client {
+	return ecs.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) SNSClient(creds SessionCredentials) *sns.Client {
+	return sns.NewFromConfig(f.awsConfig(creds))
 }
 
 // EC2ClientForRegion creates an EC2 client overriding the session region.

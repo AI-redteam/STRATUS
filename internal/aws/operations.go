@@ -11,13 +11,18 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
@@ -1015,6 +1020,560 @@ type AuthorizeSecurityGroupIngressResult struct {
 	FromPort int32  `json:"from_port"`
 	ToPort   int32  `json:"to_port"`
 	CidrIP   string `json:"cidr_ip"`
+}
+
+// ---- EC2 User Data operations ----
+
+// GetInstanceUserData retrieves the userData attribute of an EC2 instance.
+// The returned data is base64-encoded by the AWS API.
+func (f *ClientFactory) GetInstanceUserData(ctx context.Context, creds SessionCredentials, instanceID string) (string, error) {
+	f.rateLimiter.Wait("ec2")
+	f.logAPICall("ec2", "DescribeInstanceAttribute", map[string]string{"instance": instanceID, "attribute": "userData"}, nil)
+
+	client := f.EC2Client(creds)
+	out, err := client.DescribeInstanceAttribute(ctx, &ec2.DescribeInstanceAttributeInput{
+		InstanceId: &instanceID,
+		Attribute:  ec2types.InstanceAttributeNameUserData,
+	})
+	if err != nil {
+		return "", fmt.Errorf("DescribeInstanceAttribute(%s, userData): %w", instanceID, err)
+	}
+	if out.UserData != nil && out.UserData.Value != nil {
+		return aws.ToString(out.UserData.Value), nil
+	}
+	return "", nil
+}
+
+// ---- EBS Snapshot operations ----
+
+// EBSSnapshotSummary holds snapshot metadata.
+type EBSSnapshotSummary struct {
+	SnapshotID  string `json:"snapshot_id"`
+	VolumeID    string `json:"volume_id"`
+	State       string `json:"state"`
+	VolumeSize  int32  `json:"volume_size_gb"`
+	Description string `json:"description"`
+	Encrypted   bool   `json:"encrypted"`
+	OwnerID     string `json:"owner_id"`
+	StartTime   string `json:"start_time"`
+}
+
+// ListEBSSnapshots lists EBS snapshots owned by the current account.
+func (f *ClientFactory) ListEBSSnapshots(ctx context.Context, creds SessionCredentials) ([]EBSSnapshotSummary, error) {
+	cacheKey := "ec2:snapshots:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]EBSSnapshotSummary), nil
+	}
+
+	f.rateLimiter.Wait("ec2")
+	f.logAPICall("ec2", "DescribeSnapshots", nil, nil)
+
+	client := f.EC2Client(creds)
+	var snapshots []EBSSnapshotSummary
+	paginator := ec2.NewDescribeSnapshotsPaginator(client, &ec2.DescribeSnapshotsInput{
+		OwnerIds: []string{"self"},
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("DescribeSnapshots: %w", err)
+		}
+		for _, s := range page.Snapshots {
+			snapshots = append(snapshots, EBSSnapshotSummary{
+				SnapshotID:  aws.ToString(s.SnapshotId),
+				VolumeID:    aws.ToString(s.VolumeId),
+				State:       string(s.State),
+				VolumeSize:  aws.ToInt32(s.VolumeSize),
+				Description: aws.ToString(s.Description),
+				Encrypted:   aws.ToBool(s.Encrypted),
+				OwnerID:     aws.ToString(s.OwnerId),
+				StartTime:   safeTimePtr(s.StartTime),
+			})
+		}
+		f.rateLimiter.Wait("ec2")
+	}
+	f.cache.Put(cacheKey, snapshots)
+	return snapshots, nil
+}
+
+// ---- RDS operations ----
+
+// RDSInstanceSummary holds RDS instance metadata.
+type RDSInstanceSummary struct {
+	DBInstanceID   string `json:"db_instance_id"`
+	Engine         string `json:"engine"`
+	EngineVersion  string `json:"engine_version"`
+	InstanceClass  string `json:"instance_class"`
+	Endpoint       string `json:"endpoint"`
+	Port           int32  `json:"port"`
+	MasterUsername string `json:"master_username"`
+	PublicAccess   bool   `json:"publicly_accessible"`
+	Encrypted      bool   `json:"encrypted"`
+	Status         string `json:"status"`
+	MultiAZ        bool   `json:"multi_az"`
+}
+
+// ListRDSInstances enumerates RDS database instances.
+func (f *ClientFactory) ListRDSInstances(ctx context.Context, creds SessionCredentials) ([]RDSInstanceSummary, error) {
+	cacheKey := "rds:instances:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]RDSInstanceSummary), nil
+	}
+
+	f.rateLimiter.Wait("rds")
+	f.logAPICall("rds", "DescribeDBInstances", nil, nil)
+
+	client := f.RDSClient(creds)
+	var instances []RDSInstanceSummary
+	paginator := rds.NewDescribeDBInstancesPaginator(client, &rds.DescribeDBInstancesInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("DescribeDBInstances: %w", err)
+		}
+		for _, db := range page.DBInstances {
+			endpoint := ""
+			var port int32
+			if db.Endpoint != nil {
+				endpoint = aws.ToString(db.Endpoint.Address)
+				if db.Endpoint.Port != nil {
+					port = *db.Endpoint.Port
+				}
+			}
+			instances = append(instances, RDSInstanceSummary{
+				DBInstanceID:   aws.ToString(db.DBInstanceIdentifier),
+				Engine:         aws.ToString(db.Engine),
+				EngineVersion:  aws.ToString(db.EngineVersion),
+				InstanceClass:  aws.ToString(db.DBInstanceClass),
+				Endpoint:       endpoint,
+				Port:           port,
+				MasterUsername: aws.ToString(db.MasterUsername),
+				PublicAccess:   aws.ToBool(db.PubliclyAccessible),
+				Encrypted:      aws.ToBool(db.StorageEncrypted),
+				Status:         aws.ToString(db.DBInstanceStatus),
+				MultiAZ:        aws.ToBool(db.MultiAZ),
+			})
+		}
+		f.rateLimiter.Wait("rds")
+	}
+	f.cache.Put(cacheKey, instances)
+	return instances, nil
+}
+
+// RDSSnapshotSummary holds RDS snapshot metadata.
+type RDSSnapshotSummary struct {
+	SnapshotID  string `json:"snapshot_id"`
+	DBInstance  string `json:"db_instance"`
+	Engine      string `json:"engine"`
+	Status      string `json:"status"`
+	Encrypted   bool   `json:"encrypted"`
+	SnapshotType string `json:"snapshot_type"`
+	CreateTime  string `json:"create_time"`
+}
+
+// ListRDSSnapshots enumerates RDS snapshots.
+func (f *ClientFactory) ListRDSSnapshots(ctx context.Context, creds SessionCredentials) ([]RDSSnapshotSummary, error) {
+	cacheKey := "rds:snapshots:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]RDSSnapshotSummary), nil
+	}
+
+	f.rateLimiter.Wait("rds")
+	f.logAPICall("rds", "DescribeDBSnapshots", nil, nil)
+
+	client := f.RDSClient(creds)
+	var snapshots []RDSSnapshotSummary
+	paginator := rds.NewDescribeDBSnapshotsPaginator(client, &rds.DescribeDBSnapshotsInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("DescribeDBSnapshots: %w", err)
+		}
+		for _, s := range page.DBSnapshots {
+			ct := ""
+			if s.SnapshotCreateTime != nil {
+				ct = s.SnapshotCreateTime.Format("2006-01-02 15:04")
+			}
+			snapshots = append(snapshots, RDSSnapshotSummary{
+				SnapshotID:   aws.ToString(s.DBSnapshotIdentifier),
+				DBInstance:   aws.ToString(s.DBInstanceIdentifier),
+				Engine:       aws.ToString(s.Engine),
+				Status:       aws.ToString(s.Status),
+				Encrypted:    aws.ToBool(s.Encrypted),
+				SnapshotType: aws.ToString(s.SnapshotType),
+				CreateTime:   ct,
+			})
+		}
+		f.rateLimiter.Wait("rds")
+	}
+	f.cache.Put(cacheKey, snapshots)
+	return snapshots, nil
+}
+
+// ---- DynamoDB operations ----
+
+// DynamoDBTableSummary holds DynamoDB table metadata.
+type DynamoDBTableSummary struct {
+	TableName   string `json:"table_name"`
+	TableARN    string `json:"table_arn"`
+	Status      string `json:"status"`
+	ItemCount   int64  `json:"item_count"`
+	SizeBytes   int64  `json:"size_bytes"`
+	TableClass  string `json:"table_class"`
+	Encrypted   bool   `json:"encrypted"`
+}
+
+// ListDynamoDBTables lists DynamoDB tables with detail.
+func (f *ClientFactory) ListDynamoDBTables(ctx context.Context, creds SessionCredentials) ([]DynamoDBTableSummary, error) {
+	cacheKey := "dynamodb:tables:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]DynamoDBTableSummary), nil
+	}
+
+	f.rateLimiter.Wait("dynamodb")
+	f.logAPICall("dynamodb", "ListTables", nil, nil)
+
+	client := f.DynamoDBClient(creds)
+	var tableNames []string
+	paginator := dynamodb.NewListTablesPaginator(client, &dynamodb.ListTablesInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListTables: %w", err)
+		}
+		tableNames = append(tableNames, page.TableNames...)
+		f.rateLimiter.Wait("dynamodb")
+	}
+
+	var tables []DynamoDBTableSummary
+	for _, name := range tableNames {
+		f.rateLimiter.Wait("dynamodb")
+		desc, err := client.DescribeTable(ctx, &dynamodb.DescribeTableInput{TableName: &name})
+		if err != nil {
+			continue
+		}
+		t := desc.Table
+		encrypted := t.SSEDescription != nil && t.SSEDescription.Status == "ENABLED"
+		tableClass := "STANDARD"
+		if t.TableClassSummary != nil {
+			tableClass = string(t.TableClassSummary.TableClass)
+		}
+		tables = append(tables, DynamoDBTableSummary{
+			TableName:  aws.ToString(t.TableName),
+			TableARN:   aws.ToString(t.TableArn),
+			Status:     string(t.TableStatus),
+			ItemCount:  aws.ToInt64(t.ItemCount),
+			SizeBytes:  aws.ToInt64(t.TableSizeBytes),
+			TableClass: tableClass,
+			Encrypted:  encrypted,
+		})
+	}
+	f.cache.Put(cacheKey, tables)
+	return tables, nil
+}
+
+// ---- ECS operations ----
+
+// ECSClusterSummary holds ECS cluster metadata.
+type ECSClusterSummary struct {
+	ClusterARN            string `json:"cluster_arn"`
+	ClusterName           string `json:"cluster_name"`
+	Status                string `json:"status"`
+	RunningTaskCount      int32  `json:"running_tasks"`
+	ActiveServicesCount   int32  `json:"active_services"`
+	RegisteredContainers  int32  `json:"registered_containers"`
+}
+
+// ListECSClusters enumerates ECS clusters.
+func (f *ClientFactory) ListECSClusters(ctx context.Context, creds SessionCredentials) ([]ECSClusterSummary, error) {
+	cacheKey := "ecs:clusters:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]ECSClusterSummary), nil
+	}
+
+	f.rateLimiter.Wait("ecs")
+	f.logAPICall("ecs", "ListClusters", nil, nil)
+
+	client := f.ECSClient(creds)
+	var clusterARNs []string
+	paginator := ecs.NewListClustersPaginator(client, &ecs.ListClustersInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListClusters: %w", err)
+		}
+		clusterARNs = append(clusterARNs, page.ClusterArns...)
+		f.rateLimiter.Wait("ecs")
+	}
+
+	if len(clusterARNs) == 0 {
+		f.cache.Put(cacheKey, []ECSClusterSummary{})
+		return nil, nil
+	}
+
+	f.rateLimiter.Wait("ecs")
+	f.logAPICall("ecs", "DescribeClusters", nil, nil)
+	desc, err := client.DescribeClusters(ctx, &ecs.DescribeClustersInput{
+		Clusters: clusterARNs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeClusters: %w", err)
+	}
+
+	var clusters []ECSClusterSummary
+	for _, c := range desc.Clusters {
+		clusters = append(clusters, ECSClusterSummary{
+			ClusterARN:           aws.ToString(c.ClusterArn),
+			ClusterName:          aws.ToString(c.ClusterName),
+			Status:               aws.ToString(c.Status),
+			RunningTaskCount:     c.RunningTasksCount,
+			ActiveServicesCount:  c.ActiveServicesCount,
+			RegisteredContainers: c.RegisteredContainerInstancesCount,
+		})
+	}
+	f.cache.Put(cacheKey, clusters)
+	return clusters, nil
+}
+
+// ECSTaskSummary holds ECS task metadata.
+type ECSTaskSummary struct {
+	TaskARN          string `json:"task_arn"`
+	TaskDefinitionARN string `json:"task_definition_arn"`
+	ClusterARN       string `json:"cluster_arn"`
+	LastStatus       string `json:"last_status"`
+	LaunchType       string `json:"launch_type"`
+	CPU              string `json:"cpu"`
+	Memory           string `json:"memory"`
+}
+
+// ListECSTasks lists running tasks in a cluster.
+func (f *ClientFactory) ListECSTasks(ctx context.Context, creds SessionCredentials, clusterARN string) ([]ECSTaskSummary, error) {
+	f.rateLimiter.Wait("ecs")
+	f.logAPICall("ecs", "ListTasks", map[string]string{"cluster": clusterARN}, nil)
+
+	client := f.ECSClient(creds)
+	var taskARNs []string
+	paginator := ecs.NewListTasksPaginator(client, &ecs.ListTasksInput{
+		Cluster:       &clusterARN,
+		DesiredStatus: ecstypes.DesiredStatusRunning,
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListTasks: %w", err)
+		}
+		taskARNs = append(taskARNs, page.TaskArns...)
+		f.rateLimiter.Wait("ecs")
+	}
+
+	if len(taskARNs) == 0 {
+		return nil, nil
+	}
+
+	f.rateLimiter.Wait("ecs")
+	desc, err := client.DescribeTasks(ctx, &ecs.DescribeTasksInput{
+		Cluster: &clusterARN,
+		Tasks:   taskARNs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeTasks: %w", err)
+	}
+
+	var tasks []ECSTaskSummary
+	for _, t := range desc.Tasks {
+		tasks = append(tasks, ECSTaskSummary{
+			TaskARN:           aws.ToString(t.TaskArn),
+			TaskDefinitionARN: aws.ToString(t.TaskDefinitionArn),
+			ClusterARN:        aws.ToString(t.ClusterArn),
+			LastStatus:        aws.ToString(t.LastStatus),
+			LaunchType:        string(t.LaunchType),
+			CPU:               aws.ToString(t.Cpu),
+			Memory:            aws.ToString(t.Memory),
+		})
+	}
+	return tasks, nil
+}
+
+// ---- SNS operations ----
+
+// SNSTopicSummary holds SNS topic metadata.
+type SNSTopicSummary struct {
+	TopicARN      string `json:"topic_arn"`
+	DisplayName   string `json:"display_name"`
+	Subscriptions string `json:"subscriptions_confirmed"`
+	Policy        string `json:"policy,omitempty"`
+}
+
+// ListSNSTopics lists SNS topics with attributes.
+func (f *ClientFactory) ListSNSTopics(ctx context.Context, creds SessionCredentials) ([]SNSTopicSummary, error) {
+	cacheKey := "sns:topics:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]SNSTopicSummary), nil
+	}
+
+	f.rateLimiter.Wait("sns")
+	f.logAPICall("sns", "ListTopics", nil, nil)
+
+	client := f.SNSClient(creds)
+	var topicARNs []string
+	paginator := sns.NewListTopicsPaginator(client, &sns.ListTopicsInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListTopics: %w", err)
+		}
+		for _, t := range page.Topics {
+			topicARNs = append(topicARNs, aws.ToString(t.TopicArn))
+		}
+		f.rateLimiter.Wait("sns")
+	}
+
+	var topics []SNSTopicSummary
+	for _, arn := range topicARNs {
+		f.rateLimiter.Wait("sns")
+		attrs, err := client.GetTopicAttributes(ctx, &sns.GetTopicAttributesInput{TopicArn: &arn})
+		if err != nil {
+			topics = append(topics, SNSTopicSummary{TopicARN: arn})
+			continue
+		}
+		topics = append(topics, SNSTopicSummary{
+			TopicARN:      arn,
+			DisplayName:   attrs.Attributes["DisplayName"],
+			Subscriptions: attrs.Attributes["SubscriptionsConfirmed"],
+			Policy:        attrs.Attributes["Policy"],
+		})
+	}
+	f.cache.Put(cacheKey, topics)
+	return topics, nil
+}
+
+// ---- IAM write operations ----
+
+// UpdateAssumeRolePolicy updates the trust policy on an IAM role.
+func (f *ClientFactory) UpdateAssumeRolePolicy(ctx context.Context, creds SessionCredentials, roleName, policyDocument string) error {
+	f.rateLimiter.Wait("iam")
+	f.logAPICall("iam", "UpdateAssumeRolePolicy", map[string]string{"role": roleName}, nil)
+
+	client := f.IAMClient(creds)
+	_, err := client.UpdateAssumeRolePolicy(ctx, &iam.UpdateAssumeRolePolicyInput{
+		RoleName:       &roleName,
+		PolicyDocument: &policyDocument,
+	})
+	if err != nil {
+		f.logAPICall("iam", "UpdateAssumeRolePolicy", map[string]string{"role": roleName}, err)
+		return fmt.Errorf("UpdateAssumeRolePolicy(%s): %w", roleName, err)
+	}
+	// Invalidate role cache
+	f.cache.Clear("iam:role-detail:")
+	return nil
+}
+
+// GetIAMPolicyVersion retrieves a specific version of an IAM policy document.
+func (f *ClientFactory) GetIAMPolicyVersion(ctx context.Context, creds SessionCredentials, policyARN, versionID string) (string, error) {
+	cacheKey := "iam:policy-version:" + creds.AccessKeyID + ":" + policyARN + ":" + versionID
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.(string), nil
+	}
+
+	f.rateLimiter.Wait("iam")
+	f.logAPICall("iam", "GetPolicyVersion", map[string]string{"policy": policyARN, "version": versionID}, nil)
+
+	client := f.IAMClient(creds)
+	out, err := client.GetPolicyVersion(ctx, &iam.GetPolicyVersionInput{
+		PolicyArn: &policyARN,
+		VersionId: &versionID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("GetPolicyVersion(%s, %s): %w", policyARN, versionID, err)
+	}
+	doc := aws.ToString(out.PolicyVersion.Document)
+	f.cache.Put(cacheKey, doc)
+	return doc, nil
+}
+
+// GetIAMPolicyDefaultVersion retrieves the default version of an IAM policy.
+func (f *ClientFactory) GetIAMPolicyDefaultVersion(ctx context.Context, creds SessionCredentials, policyARN string) (string, string, error) {
+	f.rateLimiter.Wait("iam")
+	f.logAPICall("iam", "GetPolicy", map[string]string{"policy": policyARN}, nil)
+
+	client := f.IAMClient(creds)
+	out, err := client.GetPolicy(ctx, &iam.GetPolicyInput{
+		PolicyArn: &policyARN,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("GetPolicy(%s): %w", policyARN, err)
+	}
+	return aws.ToString(out.Policy.DefaultVersionId), aws.ToString(out.Policy.Arn), nil
+}
+
+// GetIAMUserInlinePolicy retrieves an inline policy document for a user.
+func (f *ClientFactory) GetIAMUserInlinePolicy(ctx context.Context, creds SessionCredentials, userName, policyName string) (string, error) {
+	f.rateLimiter.Wait("iam")
+	f.logAPICall("iam", "GetUserPolicy", map[string]string{"user": userName, "policy": policyName}, nil)
+
+	client := f.IAMClient(creds)
+	out, err := client.GetUserPolicy(ctx, &iam.GetUserPolicyInput{
+		UserName:   &userName,
+		PolicyName: &policyName,
+	})
+	if err != nil {
+		return "", fmt.Errorf("GetUserPolicy(%s, %s): %w", userName, policyName, err)
+	}
+	return aws.ToString(out.PolicyDocument), nil
+}
+
+// GetIAMRoleInlinePolicy retrieves an inline policy document for a role.
+func (f *ClientFactory) GetIAMRoleInlinePolicy(ctx context.Context, creds SessionCredentials, roleName, policyName string) (string, error) {
+	f.rateLimiter.Wait("iam")
+	f.logAPICall("iam", "GetRolePolicy", map[string]string{"role": roleName, "policy": policyName}, nil)
+
+	client := f.IAMClient(creds)
+	out, err := client.GetRolePolicy(ctx, &iam.GetRolePolicyInput{
+		RoleName:   &roleName,
+		PolicyName: &policyName,
+	})
+	if err != nil {
+		return "", fmt.Errorf("GetRolePolicy(%s, %s): %w", roleName, policyName, err)
+	}
+	return aws.ToString(out.PolicyDocument), nil
+}
+
+// GetLambdaFunctionEnvVars retrieves environment variables for a Lambda function.
+func (f *ClientFactory) GetLambdaFunctionEnvVars(ctx context.Context, creds SessionCredentials, functionName string) (map[string]string, error) {
+	f.rateLimiter.Wait("lambda")
+	f.logAPICall("lambda", "GetFunctionConfiguration", map[string]string{"function": functionName}, nil)
+
+	client := f.LambdaClient(creds)
+	out, err := client.GetFunctionConfiguration(ctx, &lambda.GetFunctionConfigurationInput{
+		FunctionName: &functionName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("GetFunctionConfiguration(%s): %w", functionName, err)
+	}
+	if out.Environment != nil && out.Environment.Variables != nil {
+		return out.Environment.Variables, nil
+	}
+	return nil, nil
+}
+
+// GetS3BucketEncryption checks a bucket's encryption configuration.
+func (f *ClientFactory) GetS3BucketEncryption(ctx context.Context, creds SessionCredentials, bucket string) (string, error) {
+	f.rateLimiter.Wait("s3")
+	f.logAPICall("s3", "GetBucketEncryption", map[string]string{"bucket": bucket}, nil)
+
+	client := f.S3Client(creds)
+	out, err := client.GetBucketEncryption(ctx, &s3.GetBucketEncryptionInput{Bucket: &bucket})
+	if err != nil {
+		return "", err
+	}
+	if out.ServerSideEncryptionConfiguration != nil {
+		for _, rule := range out.ServerSideEncryptionConfiguration.Rules {
+			if rule.ApplyServerSideEncryptionByDefault != nil {
+				return string(rule.ApplyServerSideEncryptionByDefault.SSEAlgorithm), nil
+			}
+		}
+	}
+	return "none", nil
 }
 
 // AuthorizeSecurityGroupIngress adds an ingress rule to a security group.

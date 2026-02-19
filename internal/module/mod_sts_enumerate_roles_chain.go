@@ -64,7 +64,7 @@ func (m *STSEnumerateRolesChainModule) Preflight(ctx sdk.RunContext) sdk.Preflig
 		PlannedAPICalls: []string{
 			"iam:ListRoles (paginated)",
 			"iam:GetRole (per role, for trust policy)",
-			"sts:AssumeRole (per assumable role, if dry_assume=true)",
+			"sts:AssumeRole (per assumable role, for chain discovery)",
 		},
 		Confidence: 1.0,
 	}
@@ -96,6 +96,11 @@ func (m *STSEnumerateRolesChainModule) Run(ctx sdk.RunContext, prog sdk.Progress
 	callerARN, _, _, err := m.factory.GetCallerIdentity(bgCtx, creds)
 	if err != nil {
 		return sdk.ErrResult(fmt.Errorf("getting caller identity: %w", err))
+	}
+
+	// Register caller as a graph node so edges referencing it don't cause D3 NaN crashes
+	if m.graph != nil {
+		m.graph.AddNode(callerARN, "iam_principal", callerARN, ctx.Session.UUID, nil)
 	}
 
 	// Enumerate all roles

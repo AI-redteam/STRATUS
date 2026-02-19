@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/stratus-framework/stratus/internal/aws"
+	"github.com/stratus-framework/stratus/internal/graph"
 	sdk "github.com/stratus-framework/stratus/pkg/sdk/v1"
 )
 
@@ -16,6 +17,7 @@ import (
 // iam:PutUserPolicy, sts:AssumeRole with wildcard, etc.
 type IAMPolicyAnalyzerModule struct {
 	factory *aws.ClientFactory
+	graph   *graph.Store
 }
 
 // privescPattern describes a privilege escalation technique.
@@ -178,8 +180,9 @@ func (m *IAMPolicyAnalyzerModule) Meta() sdk.ModuleMeta {
 		Outputs: []sdk.OutputSpec{
 			{Name: "principals_scanned", Type: "int", Description: "Total users/roles scanned"},
 			{Name: "privesc_paths", Type: "[]map", Description: "Detected privilege escalation paths"},
-			{Name: "high_risk_count", Type: "int", Description: "Number of principals with privesc paths"},
+			{Name: "high_risk_count", Type: "int", Description: "Number of unique principals with privesc paths"},
 			{Name: "admin_principals", Type: "[]string", Description: "Principals with full admin access"},
+			{Name: "warnings", Type: "[]string", Description: "Non-fatal errors encountered during analysis"},
 		},
 		References: []string{
 			"https://attack.mitre.org/techniques/T1098/",
@@ -228,13 +231,10 @@ func (m *IAMPolicyAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk
 	}
 
 	var principals []principalInfo
-	var warnings []string
 
 	if scanUsers {
 		users, err := m.factory.ListIAMUsers(bgCtx, creds)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("failed to list users: %s", err))
-		} else {
+		if err == nil {
 			for _, u := range users {
 				principals = append(principals, principalInfo{"user", u.UserName, u.ARN})
 			}
@@ -243,17 +243,11 @@ func (m *IAMPolicyAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk
 
 	if scanRoles {
 		roles, err := m.factory.ListIAMRoles(bgCtx, creds)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("failed to list roles: %s", err))
-		} else {
+		if err == nil {
 			for _, r := range roles {
 				principals = append(principals, principalInfo{"role", r.RoleName, r.ARN})
 			}
 		}
-	}
-
-	if len(principals) == 0 && len(warnings) > 0 {
-		return sdk.ErrResult(fmt.Errorf("no principals to scan: %s", warnings[0]))
 	}
 
 	if len(principals) > maxPrincipals {
@@ -264,13 +258,17 @@ func (m *IAMPolicyAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk
 
 	var privescPaths []map[string]any
 	var adminPrincipals []string
-	highRiskCount := 0
+	var warnings []string
+	riskyPrincipals := make(map[string]bool)
 
 	for i, p := range principals {
 		prog.Update(i+1, fmt.Sprintf("Analyzing %s: %s", p.principalType, p.name))
 
 		// Collect all actions from all policies for this principal
-		actions := m.collectPrincipalActions(bgCtx, creds, p.principalType, p.name)
+		actions, errs := m.collectPrincipalActions(bgCtx, creds, p.principalType, p.name)
+		for _, e := range errs {
+			warnings = append(warnings, fmt.Sprintf("%s %s: %s", p.principalType, p.name, e))
+		}
 		if len(actions) == 0 {
 			continue
 		}
@@ -278,7 +276,7 @@ func (m *IAMPolicyAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk
 		// Check for full admin
 		if actions["*"] {
 			adminPrincipals = append(adminPrincipals, p.arn)
-			highRiskCount++
+			riskyPrincipals[p.arn] = true
 			privescPaths = append(privescPaths, map[string]any{
 				"principal_type": p.principalType,
 				"principal_name": p.name,
@@ -293,7 +291,7 @@ func (m *IAMPolicyAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk
 		// Check for known privesc patterns
 		for _, pattern := range knownPrivescPatterns {
 			if matchesPrivescPattern(actions, pattern) {
-				highRiskCount++
+				riskyPrincipals[p.arn] = true
 				privescPaths = append(privescPaths, map[string]any{
 					"principal_type": p.principalType,
 					"principal_name": p.name,
@@ -308,16 +306,15 @@ func (m *IAMPolicyAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk
 		}
 	}
 
-	outputs := map[string]any{
-		"principals_scanned": len(principals),
-		"privesc_paths":      privescPaths,
-		"high_risk_count":    highRiskCount,
-		"admin_principals":   adminPrincipals,
+	return sdk.RunResult{
+		Outputs: map[string]any{
+			"principals_scanned": len(principals),
+			"privesc_paths":      privescPaths,
+			"high_risk_count":    len(riskyPrincipals),
+			"admin_principals":   adminPrincipals,
+			"warnings":           warnings,
+		},
 	}
-	if len(warnings) > 0 {
-		outputs["warnings"] = warnings
-	}
-	return sdk.RunResult{Outputs: outputs}
 }
 
 func (m *IAMPolicyAnalyzerModule) Replay(ctx sdk.RunContext, prior sdk.PriorRunRecord) sdk.RunResult {
@@ -325,61 +322,72 @@ func (m *IAMPolicyAnalyzerModule) Replay(ctx sdk.RunContext, prior sdk.PriorRunR
 }
 
 // collectPrincipalActions gathers all allowed actions from all policies for a principal.
-func (m *IAMPolicyAnalyzerModule) collectPrincipalActions(ctx context.Context, creds aws.SessionCredentials, principalType, name string) map[string]bool {
+// Returns the action set and any non-fatal errors encountered during collection.
+func (m *IAMPolicyAnalyzerModule) collectPrincipalActions(ctx context.Context, creds aws.SessionCredentials, principalType, name string) (map[string]bool, []string) {
 	actions := make(map[string]bool)
+	var warnings []string
 
 	if principalType == "user" {
 		detail, err := m.factory.GetIAMUserDetail(ctx, creds, name)
 		if err != nil {
-			return actions
+			return actions, []string{fmt.Sprintf("failed to get user detail: %v", err)}
 		}
 
 		// Attached managed policies
 		for _, policyARN := range detail.AttachedPolicies {
-			m.extractManagedPolicyActions(ctx, creds, policyARN, actions)
+			if err := m.extractManagedPolicyActions(ctx, creds, policyARN, actions); err != nil {
+				warnings = append(warnings, fmt.Sprintf("policy %s: %v", policyARN, err))
+			}
 		}
 
 		// Inline policies
 		for _, policyName := range detail.InlinePolicies {
 			doc, err := m.factory.GetIAMUserInlinePolicy(ctx, creds, name, policyName)
-			if err == nil {
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("inline policy %s: %v", policyName, err))
+			} else {
 				extractActionsFromDocument(doc, actions)
 			}
 		}
 	} else {
 		detail, err := m.factory.GetIAMRoleDetail(ctx, creds, name)
 		if err != nil {
-			return actions
+			return actions, []string{fmt.Sprintf("failed to get role detail: %v", err)}
 		}
 
 		for _, policyARN := range detail.AttachedPolicies {
-			m.extractManagedPolicyActions(ctx, creds, policyARN, actions)
+			if err := m.extractManagedPolicyActions(ctx, creds, policyARN, actions); err != nil {
+				warnings = append(warnings, fmt.Sprintf("policy %s: %v", policyARN, err))
+			}
 		}
 
 		for _, policyName := range detail.InlinePolicies {
 			doc, err := m.factory.GetIAMRoleInlinePolicy(ctx, creds, name, policyName)
-			if err == nil {
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("inline policy %s: %v", policyName, err))
+			} else {
 				extractActionsFromDocument(doc, actions)
 			}
 		}
 	}
 
-	return actions
+	return actions, warnings
 }
 
 // extractManagedPolicyActions retrieves and parses a managed policy document.
-func (m *IAMPolicyAnalyzerModule) extractManagedPolicyActions(ctx context.Context, creds aws.SessionCredentials, policyARN string, actions map[string]bool) {
+func (m *IAMPolicyAnalyzerModule) extractManagedPolicyActions(ctx context.Context, creds aws.SessionCredentials, policyARN string, actions map[string]bool) error {
 	versionID, _, err := m.factory.GetIAMPolicyDefaultVersion(ctx, creds, policyARN)
 	if err != nil {
-		return
+		return fmt.Errorf("getting default version: %w", err)
 	}
 
 	doc, err := m.factory.GetIAMPolicyVersion(ctx, creds, policyARN, versionID)
 	if err != nil {
-		return
+		return fmt.Errorf("getting policy version %s: %w", versionID, err)
 	}
 
 	extractActionsFromDocument(doc, actions)
+	return nil
 }
 
 // extractActionsFromDocument parses an IAM policy document and extracts allowed actions.

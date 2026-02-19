@@ -133,7 +133,6 @@ func (m *S3ExfilCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.RunR
 		if err != nil {
 			summary["encrypted"] = "unknown"
 			summary["encryption"] = "error"
-			summary["encryption_error"] = err.Error()
 		} else {
 			summary["encryption"] = encryption
 			if encryption == "none" {
@@ -155,8 +154,8 @@ func (m *S3ExfilCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.RunR
 
 		// Assess risk level
 		accessible, _ := summary["accessible"].(bool)
-		encrypted, _ := summary["encrypted"].(bool)
-		if accessible && !encrypted {
+		encrypted, knownEncrypted := summary["encrypted"].(bool)
+		if accessible && knownEncrypted && !encrypted {
 			summary["risk_level"] = "critical"
 		} else if accessible {
 			summary["risk_level"] = "medium"

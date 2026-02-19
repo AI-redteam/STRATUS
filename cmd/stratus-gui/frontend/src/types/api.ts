@@ -285,6 +285,40 @@ export interface ImportIdentityOnlyResult {
   identity: IdentityInfo;
 }
 
+// IAM Privilege Escalation Analyzer structured outputs
+export interface PrivEscFinding {
+  principal_type: string;
+  principal_name: string;
+  principal_arn: string;
+  finding: string;
+  description: string;
+  required_actions: string[];
+  severity: string;
+  reference: string;
+}
+
+export interface PrivEscAnalysis {
+  principals_scanned: number;
+  privesc_paths: PrivEscFinding[];
+  high_risk_count: number;
+  admin_principals: string[];
+}
+
+// STS Recursive Role Chain Discovery structured outputs
+export interface RoleChainEntry {
+  target_role: string;
+  path: string[];
+  depth: number;
+}
+
+export interface RoleChainAnalysis {
+  roles_enumerated: number;
+  assumable_roles: string[];
+  chain_depth_reached: number;
+  trust_edges: number;
+  chains: RoleChainEntry[];
+}
+
 export interface AWSExplorerRequest {
   service: string;
   action: string;

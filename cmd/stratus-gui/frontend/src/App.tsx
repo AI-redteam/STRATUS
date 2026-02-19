@@ -12,6 +12,8 @@ import { Audit } from './views/Audit';
 import { Artifacts } from './views/Artifacts';
 import { Notes } from './views/Notes';
 import { AWSExplorer } from './views/AWSExplorer';
+import { PrivEscResults } from './views/PrivEscResults';
+import { RoleChainResults } from './views/RoleChainResults';
 import type { WorkspaceInfo, SessionInfo } from './types/api';
 import * as api from './hooks/useWails';
 
@@ -81,6 +83,8 @@ export function App() {
             <Route path="/audit" element={<Audit />} />
             <Route path="/artifacts" element={<Artifacts />} />
             <Route path="/notes" element={<Notes />} />
+            <Route path="/privesc" element={<PrivEscResults />} />
+            <Route path="/role-chains" element={<RoleChainResults />} />
             <Route path="/aws-explorer" element={<AWSExplorer />} />
           </Routes>
         </main>

@@ -34,12 +34,13 @@ type SessionCredentials struct {
 
 // ClientFactory creates rate-limited, audit-logged AWS service clients.
 type ClientFactory struct {
-	mu          sync.Mutex
-	rateLimiter *RateLimiter
-	logger      zerolog.Logger
-	cache       *ResponseCache
-	auditLogger *audit.Logger
-	sessionUUID string
+	mu           sync.Mutex
+	rateLimiter  *RateLimiter
+	logger       zerolog.Logger
+	cache        *ResponseCache
+	auditLogger  *audit.Logger
+	sessionUUID  string
+	defaultCreds *SessionCredentials
 }
 
 // NewClientFactory creates a new AWS client factory.
@@ -80,7 +81,26 @@ func (f *ClientFactory) SetAudit(al *audit.Logger, sessionUUID string) {
 	f.sessionUUID = sessionUUID
 }
 
+// SetDefaultCredentials stores credentials that will be used when a caller
+// passes SessionCredentials without an AccessKeyID (i.e., region-only creds).
+// This lets modules create creds with just the region while the runner
+// supplies the actual secret material.
+func (f *ClientFactory) SetDefaultCredentials(creds SessionCredentials) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.defaultCreds = &creds
+}
+
 func (f *ClientFactory) awsConfig(creds SessionCredentials) aws.Config {
+	// Merge default credentials when caller provides only region
+	if creds.AccessKeyID == "" && f.defaultCreds != nil {
+		creds.AccessKeyID = f.defaultCreds.AccessKeyID
+		creds.SecretAccessKey = f.defaultCreds.SecretAccessKey
+		creds.SessionToken = f.defaultCreds.SessionToken
+		if creds.Region == "" {
+			creds.Region = f.defaultCreds.Region
+		}
+	}
 	return aws.Config{
 		Region: creds.Region,
 		Credentials: credentials.NewStaticCredentialsProvider(

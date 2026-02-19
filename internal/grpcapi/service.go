@@ -712,6 +712,104 @@ func (s *Service) DeleteNote(uuidOrPrefix string) error {
 	return err
 }
 
+// --- Identity import operations ---
+
+// ImportIAMKeyRequest holds parameters for importing an IAM key.
+type ImportIAMKeyRequest struct {
+	AccessKey string `json:"access_key"`
+	SecretKey string `json:"secret_key"`
+	Label     string `json:"label"`
+	Region    string `json:"region"`
+}
+
+// ImportIAMKeyResult holds the result of an IAM key import.
+type ImportIAMKeyResult struct {
+	Identity IdentityInfo `json:"identity"`
+	Session  SessionInfo  `json:"session"`
+}
+
+func (s *Service) ImportIAMKey(req ImportIAMKeyRequest) (*ImportIAMKeyResult, error) {
+	broker := identity.NewBroker(s.engine.MetadataDB, s.engine.Vault, s.engine.AuditLogger, s.engine.Workspace.UUID)
+
+	label := req.Label
+	if label == "" && len(req.AccessKey) >= 4 {
+		label = "iam-key-" + req.AccessKey[len(req.AccessKey)-4:]
+	}
+	region := req.Region
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	id, sess, err := broker.ImportIAMKey(identity.IAMKeyInput{
+		AccessKey: req.AccessKey,
+		SecretKey: req.SecretKey,
+		Label:     label,
+		Region:    region,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &ImportIAMKeyResult{
+		Identity: IdentityInfo{
+			UUID:          id.UUID,
+			Label:         id.Label,
+			SourceType:    string(id.SourceType),
+			PrincipalARN:  id.PrincipalARN,
+			PrincipalType: string(id.PrincipalType),
+			AccountID:     id.AccountID,
+			AcquiredAt:    id.AcquiredAt.Format(time.RFC3339),
+		},
+		Session: sessionToInfo(sess),
+	}, nil
+}
+
+// ImportSTSSessionRequest holds parameters for importing an STS session.
+type ImportSTSSessionRequest struct {
+	AccessKey    string `json:"access_key"`
+	SecretKey    string `json:"secret_key"`
+	SessionToken string `json:"session_token"`
+	Label        string `json:"label"`
+	Region       string `json:"region"`
+}
+
+func (s *Service) ImportSTSSession(req ImportSTSSessionRequest) (*ImportIAMKeyResult, error) {
+	broker := identity.NewBroker(s.engine.MetadataDB, s.engine.Vault, s.engine.AuditLogger, s.engine.Workspace.UUID)
+
+	label := req.Label
+	if label == "" && len(req.AccessKey) >= 4 {
+		label = "sts-session-" + req.AccessKey[len(req.AccessKey)-4:]
+	}
+	region := req.Region
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	id, sess, err := broker.ImportSTSSession(identity.STSSessionInput{
+		AccessKey:    req.AccessKey,
+		SecretKey:    req.SecretKey,
+		SessionToken: req.SessionToken,
+		Label:        label,
+		Region:       region,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &ImportIAMKeyResult{
+		Identity: IdentityInfo{
+			UUID:          id.UUID,
+			Label:         id.Label,
+			SourceType:    string(id.SourceType),
+			PrincipalARN:  id.PrincipalARN,
+			PrincipalType: string(id.PrincipalType),
+			AccountID:     id.AccountID,
+			AcquiredAt:    id.AcquiredAt.Format(time.RFC3339),
+		},
+		Session: sessionToInfo(sess),
+	}, nil
+}
+
 // suppress unused imports for packages used indirectly
 var (
 	_ = (*sql.DB)(nil)

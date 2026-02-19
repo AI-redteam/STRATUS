@@ -31,10 +31,11 @@ export function Graph() {
     setError('');
     try {
       const raw = await api.getGraphSnapshot();
-      const data = JSON.parse(raw) as GraphSnapshot;
+      const data = JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw)) as GraphSnapshot;
       setSnapshot(data);
     } catch (e: any) {
-      setError(e?.message || 'Failed to load graph');
+      const errMsg = typeof e === 'string' ? e : (e?.message || String(e) || 'Failed to load graph');
+      setError(errMsg);
     }
     setLoading(false);
   };
@@ -65,6 +66,22 @@ export function Graph() {
       type: n.type,
       label: n.label || n.id.split('/').pop() || n.id,
     }));
+
+    // Create placeholder nodes for any edge endpoints missing from the node set
+    // so D3 force-link can resolve all source/target references.
+    const nodeIdSet = new Set(nodes.map(n => n.id));
+    for (const e of (snapshot.edges || [])) {
+      for (const id of [e.source_node_id, e.target_node_id]) {
+        if (!nodeIdSet.has(id)) {
+          const nodeType = id.startsWith('service:') ? 'service'
+            : id.startsWith('federated:') ? 'federated'
+            : id.endsWith(':root') ? 'account_root'
+            : 'unknown';
+          nodes.push({ id, type: nodeType, label: id.split('/').pop() || id.split(':').pop() || id });
+          nodeIdSet.add(id);
+        }
+      }
+    }
 
     const links: GraphLink[] = (snapshot.edges || []).map(e => ({
       source: e.source_node_id,

@@ -7,6 +7,7 @@ import type {
   GraphEdgeInfo, GraphPathResult, GraphStats, ModuleInfo,
   RunModuleRequest, RunModuleResult, RunInfo, AuditEntry,
   ScopeInfo, NoteInfo, AddNoteRequest,
+  ImportIAMKeyRequest, ImportSTSSessionRequest, ImportResult,
 } from '../types/api';
 
 // At runtime, Wails injects window.go.main.App
@@ -34,6 +35,8 @@ export const getWorkspace = () => call<WorkspaceInfo>('GetWorkspace');
 export const listIdentities = () => call<IdentityInfo[]>('ListIdentities');
 export const getIdentity = (uuidOrLabel: string) => call<IdentityInfo>('GetIdentity', uuidOrLabel);
 export const archiveIdentity = (uuidOrLabel: string) => call<void>('ArchiveIdentity', uuidOrLabel);
+export const importIAMKey = (req: ImportIAMKeyRequest) => call<ImportResult>('ImportIAMKey', req);
+export const importSTSSession = (req: ImportSTSSessionRequest) => call<ImportResult>('ImportSTSSession', req);
 
 // --- Sessions ---
 export const listSessions = () => call<SessionInfo[]>('ListSessions');

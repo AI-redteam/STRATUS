@@ -158,6 +158,20 @@ func (m *EnumerateRolesModule) parseTrustPolicyEdges(policyDoc, roleARN, session
 
 		principals := extractStmtPrincipals(stmt.Principal)
 		for _, principal := range principals {
+			// Ensure the source principal exists as a graph node
+			nodeType := "iam_principal"
+			nodeLabel := principal
+			if strings.HasPrefix(principal, "service:") {
+				nodeType = "service"
+				nodeLabel = strings.TrimPrefix(principal, "service:")
+			} else if strings.HasPrefix(principal, "federated:") {
+				nodeType = "federated"
+				nodeLabel = strings.TrimPrefix(principal, "federated:")
+			} else if strings.HasSuffix(principal, ":root") {
+				nodeType = "account_root"
+			}
+			m.graph.AddNode(principal, nodeType, nodeLabel, sessionUUID, nil)
+
 			edge := core.GraphEdge{
 				SourceNodeID:            principal,
 				TargetNodeID:            roleARN,

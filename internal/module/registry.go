@@ -301,6 +301,10 @@ func (r *Runner) Execute(ctx context.Context, cfg RunConfig) (*core.ModuleRun, e
 		"action":     "started",
 	})
 
+	// Set resolved credentials on the factory so modules can create
+	// region-only creds and the factory fills in the secret material.
+	r.factory.SetDefaultCredentials(cfg.Creds)
+
 	// Create a module-aware context that carries the AWS factory and graph store
 	modCtx := &moduleExecContext{
 		RunContext: runCtx,
@@ -438,13 +442,14 @@ func (r *Runner) GetRun(runUUID string) (*core.ModuleRun, error) {
 func (r *Runner) saveRun(run *core.ModuleRun) error {
 	inputsJSON, _ := json.Marshal(run.Inputs)
 	outputsJSON, _ := json.Marshal(run.Outputs)
+	snapshotJSON, _ := json.Marshal(run.SessionSnapshot)
 
 	_, err := r.db.Exec(
-		`INSERT INTO module_runs (uuid, module_id, module_version, session_uuid, inputs, status,
+		`INSERT INTO module_runs (uuid, module_id, module_version, session_uuid, session_snapshot, inputs, status,
 		 started_at, completed_at, outputs, error_detail, workspace_uuid, created_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.UUID, run.ModuleID, run.ModuleVersion, run.SessionUUID,
-		string(inputsJSON), string(run.Status),
+		string(snapshotJSON), string(inputsJSON), string(run.Status),
 		run.StartedAt.Format(time.RFC3339), nil,
 		string(outputsJSON), nil,
 		run.WorkspaceUUID, run.CreatedBy,

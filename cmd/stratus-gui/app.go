@@ -153,6 +153,20 @@ func (a *App) GetIdentity(uuidOrLabel string) (*grpcapi.IdentityInfo, error) {
 	return a.service.GetIdentity(uuidOrLabel)
 }
 
+func (a *App) ImportIAMKey(req grpcapi.ImportIAMKeyRequest) (*grpcapi.ImportIAMKeyResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.ImportIAMKey(req)
+}
+
+func (a *App) ImportSTSSession(req grpcapi.ImportSTSSessionRequest) (*grpcapi.ImportIAMKeyResult, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	return a.service.ImportSTSSession(req)
+}
+
 func (a *App) ArchiveIdentity(uuidOrLabel string) error {
 	if err := a.requireWorkspace(); err != nil {
 		return err

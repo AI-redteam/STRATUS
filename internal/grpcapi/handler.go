@@ -76,6 +76,10 @@ func NewHandler(svc *Service) *Handler {
 		// Scope
 		"scope.info": h.handleGetScopeInfo,
 
+		// Identity import
+		"identity.import_iam_key":     h.handleImportIAMKey,
+		"identity.import_sts_session": h.handleImportSTSSession,
+
 		// Notes
 		"note.list":   h.handleListNotes,
 		"note.get":    h.handleGetNote,
@@ -350,6 +354,22 @@ func (h *Handler) handleUpdateNote(_ context.Context, params json.RawMessage) (a
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	return map[string]bool{"success": true}, h.service.UpdateNote(p.UUID, p.Content)
+}
+
+func (h *Handler) handleImportIAMKey(_ context.Context, params json.RawMessage) (any, error) {
+	var req ImportIAMKeyRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.ImportIAMKey(req)
+}
+
+func (h *Handler) handleImportSTSSession(_ context.Context, params json.RawMessage) (any, error) {
+	var req ImportSTSSessionRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	return h.service.ImportSTSSession(req)
 }
 
 func (h *Handler) handleDeleteNote(_ context.Context, params json.RawMessage) (any, error) {

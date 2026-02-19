@@ -141,6 +141,26 @@ export interface NoteInfo {
   created_by: string;
 }
 
+export interface ImportIAMKeyRequest {
+  access_key: string;
+  secret_key: string;
+  label: string;
+  region: string;
+}
+
+export interface ImportSTSSessionRequest {
+  access_key: string;
+  secret_key: string;
+  session_token: string;
+  label: string;
+  region: string;
+}
+
+export interface ImportResult {
+  identity: IdentityInfo;
+  session: SessionInfo;
+}
+
 export interface AddNoteRequest {
   content: string;
   session_uuid?: string;

@@ -87,7 +87,8 @@ export function Modules() {
       const r = await api.listRuns('', '');
       setRuns(r || []);
     } catch (e: any) {
-      setRunResult({ run_uuid: '', status: 'error', error: e?.message || 'Execution failed' });
+      const errMsg = typeof e === 'string' ? e : (e?.message || String(e) || 'Execution failed');
+      setRunResult({ run_uuid: '', status: 'error', error: errMsg });
     }
     setRunning(false);
   };

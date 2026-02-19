@@ -53,7 +53,7 @@ go build ./... && go test ./... && cd cmd/stratus-gui/frontend && npx vite build
 - `internal/identity/` — Credential import broker (7 methods)
 - `internal/session/` — LIFO session stack manager
 - `internal/graph/` — SQLite pivot graph + BFS pathfinding
-- `internal/module/` — Module registry + runner + 11 built-in modules
+- `internal/module/` — Module registry + runner + 25 built-in modules
 - `internal/aws/` — SDK v2 adapter with rate limiting, caching, audit logging
 - `internal/vault/` — AES-256-GCM encrypted vault (Argon2id KDF)
 - `internal/audit/` — Append-only SHA-256 hash chain
@@ -109,7 +109,7 @@ go build ./... && go test ./... && cd cmd/stratus-gui/frontend && npx vite build
 
 ## Current state (v1 MVP)
 
-- CLI: complete (12 command files, 11 modules, full feature set)
+- CLI: complete (12 command files, 25 modules, full feature set)
 - GUI: complete (6 views, identity import, module execution, pivot graph, audit viewer)
 - Teamserver: complete (gRPC + mTLS, JSON-RPC dispatch, all service methods)
 - Tests: 15 packages passing, zero TODOs/FIXMEs

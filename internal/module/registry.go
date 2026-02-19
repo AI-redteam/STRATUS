@@ -528,15 +528,56 @@ func (p *progressReporter) Total(total int) {
 
 // RegisterBuiltinModules registers all built-in modules with the registry.
 func RegisterBuiltinModules(reg *Registry, factory *stratusaws.ClientFactory, gs *graph.Store) {
+	// IAM modules
 	reg.Register(&EnumerateRolesModule{factory: factory, graph: gs})
 	reg.Register(&EnumerateUsersModule{factory: factory})
+	reg.Register(&CreateAccessKeyModule{factory: factory})
+	reg.Register(&IAMPolicyAnalyzerModule{factory: factory, graph: gs})
+	reg.Register(&IAMBackdoorRoleModule{factory: factory})
+
+	// STS modules
+	reg.Register(&STSEnumerateRolesChainModule{factory: factory, graph: gs})
+
+	// S3 modules
 	reg.Register(&FindPublicBucketsModule{factory: factory})
-	reg.Register(&CloudTrailStatusModule{factory: factory})
-	reg.Register(&KMSKeyInventoryModule{factory: factory})
-	reg.Register(&EnumerateLambdaModule{factory: factory})
+	reg.Register(&S3ExfilCheckModule{factory: factory})
+
+	// EC2 modules
 	reg.Register(&EnumerateEC2Module{factory: factory})
 	reg.Register(&SecurityGroupAuditModule{factory: factory})
-	reg.Register(&CreateAccessKeyModule{factory: factory})
-	reg.Register(&StopTrailModule{factory: factory})
 	reg.Register(&ModifySecurityGroupModule{factory: factory})
+	reg.Register(&EC2UserDataExtractModule{factory: factory})
+	reg.Register(&EBSEnumerateSnapshotsModule{factory: factory})
+
+	// Lambda modules
+	reg.Register(&EnumerateLambdaModule{factory: factory})
+	reg.Register(&LambdaEnvVarsModule{factory: factory})
+
+	// CloudTrail modules
+	reg.Register(&CloudTrailStatusModule{factory: factory})
+	reg.Register(&StopTrailModule{factory: factory})
+
+	// CloudWatch modules
+	reg.Register(&CloudWatchEnumerateLogsModule{factory: factory})
+
+	// KMS modules
+	reg.Register(&KMSKeyInventoryModule{factory: factory})
+
+	// Secrets Manager modules
+	reg.Register(&SecretsManagerEnumerateModule{factory: factory})
+
+	// SSM modules
+	reg.Register(&SSMEnumerateParametersModule{factory: factory})
+
+	// RDS modules
+	reg.Register(&RDSEnumerateModule{factory: factory})
+
+	// DynamoDB modules
+	reg.Register(&DynamoDBEnumerateModule{factory: factory})
+
+	// ECS modules
+	reg.Register(&ECSEnumerateModule{factory: factory})
+
+	// SNS modules
+	reg.Register(&SNSEnumerateModule{factory: factory})
 }

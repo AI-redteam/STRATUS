@@ -27,20 +27,18 @@ func (m *STSEnumerateRolesChainModule) Meta() sdk.ModuleMeta {
 		ID:          "com.stratus.sts.enumerate-roles-chain",
 		Name:        "Recursive Role Chain Discovery",
 		Version:     "1.0.0",
-		Description: "Performs depth-limited BFS through assumable roles starting from the current identity. Discovers the full role assumption chain by attempting sts:AssumeRole on each discovered role, building a comprehensive pivot graph of lateral movement paths.",
+		Description: "Performs depth-limited BFS through assumable roles starting from the current identity. Discovers the full role assumption chain by analyzing trust policies on each discovered role, building a comprehensive pivot graph of lateral movement paths.",
 		Services:    []string{"sts", "iam"},
 		RequiredActions: []string{
 			"iam:ListRoles",
 			"iam:GetRole",
-			"sts:AssumeRole",
 		},
 		RequiredResources: []string{"arn:aws:iam::*:role/*"},
 		RiskClass:         sdk.RiskReadOnly,
 		Inputs: []sdk.InputSpec{
 			{Name: "max_depth", Type: "int", Default: 3, Description: "Maximum chain depth for recursive role assumption"},
 			{Name: "max_roles", Type: "int", Default: 100, Description: "Maximum roles to enumerate"},
-			{Name: "dry_assume", Type: "bool", Default: true, Description: "Test role assumption (true) or only analyze trust policies (false)"},
-		},
+			},
 		Outputs: []sdk.OutputSpec{
 			{Name: "roles_enumerated", Type: "int", Description: "Total roles discovered"},
 			{Name: "assumable_roles", Type: "[]string", Description: "Roles the current identity can assume"},
@@ -65,7 +63,6 @@ func (m *STSEnumerateRolesChainModule) Preflight(ctx sdk.RunContext) sdk.Preflig
 		PlannedAPICalls: []string{
 			"iam:ListRoles (paginated)",
 			"iam:GetRole (per role, for trust policy)",
-			"sts:AssumeRole (per assumable role, if dry_assume=true)",
 		},
 		Confidence: 1.0,
 	}
@@ -74,9 +71,9 @@ func (m *STSEnumerateRolesChainModule) Preflight(ctx sdk.RunContext) sdk.Preflig
 func (m *STSEnumerateRolesChainModule) DryRun(ctx sdk.RunContext) sdk.DryRunResult {
 	maxDepth := ctx.InputInt("max_depth")
 	return sdk.DryRunResult{
-		Description: fmt.Sprintf("Would enumerate IAM roles, analyze trust policies, and attempt role assumption chains up to depth %d.", maxDepth),
+		Description: fmt.Sprintf("Would enumerate IAM roles and analyze trust policies to discover role assumption chains up to depth %d.", maxDepth),
 		WouldMutate: false,
-		APICalls:    []string{"iam:ListRoles", "iam:GetRole", "sts:AssumeRole"},
+		APICalls:    []string{"iam:ListRoles", "iam:GetRole"},
 	}
 }
 
@@ -97,6 +94,11 @@ func (m *STSEnumerateRolesChainModule) Run(ctx sdk.RunContext, prog sdk.Progress
 	callerARN, _, _, err := m.factory.GetCallerIdentity(bgCtx, creds)
 	if err != nil {
 		return sdk.ErrResult(fmt.Errorf("getting caller identity: %w", err))
+	}
+
+	// Register caller as a graph node so edges referencing it never cause NaN crashes
+	if m.graph != nil {
+		m.graph.AddNode(callerARN, "iam_principal", callerARN, ctx.Session.UUID, nil)
 	}
 
 	// Enumerate all roles
@@ -312,21 +314,24 @@ func (m *STSEnumerateRolesChainModule) analyzeTrustPolicy(policyDoc, callerARN s
 	return canAssume, allPrincipals
 }
 
-// hasAssumeRoleAction checks if the Action field includes sts:AssumeRole.
+// hasAssumeRoleAction checks if the Action field includes any STS assume action.
 func hasAssumeRoleAction(action interface{}) bool {
 	switch a := action.(type) {
 	case string:
-		return a == "sts:AssumeRole" || a == "sts:*" || a == "*"
+		return isAssumeAction(a)
 	case []interface{}:
 		for _, item := range a {
-			if s, ok := item.(string); ok {
-				if s == "sts:AssumeRole" || s == "sts:*" || s == "*" {
-					return true
-				}
+			if s, ok := item.(string); ok && isAssumeAction(s) {
+				return true
 			}
 		}
 	}
 	return false
+}
+
+func isAssumeAction(s string) bool {
+	return s == "sts:AssumeRole" || s == "sts:AssumeRoleWithSAML" ||
+		s == "sts:AssumeRoleWithWebIdentity" || s == "sts:*" || s == "*"
 }
 
 // principalMatchesARN checks if a trust policy principal matches a caller ARN.

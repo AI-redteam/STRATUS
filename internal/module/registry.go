@@ -532,7 +532,7 @@ func RegisterBuiltinModules(reg *Registry, factory *stratusaws.ClientFactory, gs
 	reg.Register(&EnumerateRolesModule{factory: factory, graph: gs})
 	reg.Register(&EnumerateUsersModule{factory: factory})
 	reg.Register(&CreateAccessKeyModule{factory: factory})
-	reg.Register(&IAMPolicyAnalyzerModule{factory: factory, graph: gs})
+	reg.Register(&IAMPolicyAnalyzerModule{factory: factory})
 	reg.Register(&IAMBackdoorRoleModule{factory: factory})
 
 	// STS modules

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/stratus-framework/stratus/internal/aws"
-	"github.com/stratus-framework/stratus/internal/graph"
 	sdk "github.com/stratus-framework/stratus/pkg/sdk/v1"
 )
 
@@ -17,7 +16,6 @@ import (
 // iam:PutUserPolicy, sts:AssumeRole with wildcard, etc.
 type IAMPolicyAnalyzerModule struct {
 	factory *aws.ClientFactory
-	graph   *graph.Store
 }
 
 // privescPattern describes a privilege escalation technique.
@@ -230,10 +228,13 @@ func (m *IAMPolicyAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk
 	}
 
 	var principals []principalInfo
+	var warnings []string
 
 	if scanUsers {
 		users, err := m.factory.ListIAMUsers(bgCtx, creds)
-		if err == nil {
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("failed to list users: %s", err))
+		} else {
 			for _, u := range users {
 				principals = append(principals, principalInfo{"user", u.UserName, u.ARN})
 			}
@@ -242,11 +243,17 @@ func (m *IAMPolicyAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk
 
 	if scanRoles {
 		roles, err := m.factory.ListIAMRoles(bgCtx, creds)
-		if err == nil {
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("failed to list roles: %s", err))
+		} else {
 			for _, r := range roles {
 				principals = append(principals, principalInfo{"role", r.RoleName, r.ARN})
 			}
 		}
+	}
+
+	if len(principals) == 0 && len(warnings) > 0 {
+		return sdk.ErrResult(fmt.Errorf("no principals to scan: %s", warnings[0]))
 	}
 
 	if len(principals) > maxPrincipals {
@@ -301,14 +308,16 @@ func (m *IAMPolicyAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk
 		}
 	}
 
-	return sdk.RunResult{
-		Outputs: map[string]any{
-			"principals_scanned": len(principals),
-			"privesc_paths":      privescPaths,
-			"high_risk_count":    highRiskCount,
-			"admin_principals":   adminPrincipals,
-		},
+	outputs := map[string]any{
+		"principals_scanned": len(principals),
+		"privesc_paths":      privescPaths,
+		"high_risk_count":    highRiskCount,
+		"admin_principals":   adminPrincipals,
 	}
+	if len(warnings) > 0 {
+		outputs["warnings"] = warnings
+	}
+	return sdk.RunResult{Outputs: outputs}
 }
 
 func (m *IAMPolicyAnalyzerModule) Replay(ctx sdk.RunContext, prior sdk.PriorRunRecord) sdk.RunResult {

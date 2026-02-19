@@ -304,6 +304,21 @@ export interface PrivEscAnalysis {
   admin_principals: string[];
 }
 
+// STS Recursive Role Chain Discovery structured outputs
+export interface RoleChainEntry {
+  target_role: string;
+  path: string[];
+  depth: number;
+}
+
+export interface RoleChainAnalysis {
+  roles_enumerated: number;
+  assumable_roles: string[];
+  chain_depth_reached: number;
+  trust_edges: number;
+  chains: RoleChainEntry[];
+}
+
 export interface AWSExplorerRequest {
   service: string;
   action: string;

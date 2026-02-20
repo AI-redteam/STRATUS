@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
@@ -196,6 +197,10 @@ func (f *ClientFactory) DynamoDBClient(creds SessionCredentials) *dynamodb.Clien
 
 func (f *ClientFactory) ECSClient(creds SessionCredentials) *ecs.Client {
 	return ecs.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) EKSClient(creds SessionCredentials) *eks.Client {
+	return eks.NewFromConfig(f.awsConfig(creds))
 }
 
 func (f *ClientFactory) SNSClient(creds SessionCredentials) *sns.Client {

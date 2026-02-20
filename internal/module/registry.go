@@ -598,4 +598,8 @@ func RegisterBuiltinModules(reg *Registry, factory *stratusaws.ClientFactory, gs
 	// Cognito modules
 	reg.Register(&CognitoEnumerateModule{factory: factory})
 	reg.Register(&CognitoPrivescCheckModule{factory: factory})
+
+	// EKS modules
+	reg.Register(&EKSEnumerateModule{factory: factory, graph: gs})
+	reg.Register(&EKSPrivescCheckModule{factory: factory})
 }

@@ -40,6 +40,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cognitoidentity v1.33.18 // indirect
 	github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider v1.58.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/configservice v1.61.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/eks v1.80.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.4.7 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.11.17 // indirect

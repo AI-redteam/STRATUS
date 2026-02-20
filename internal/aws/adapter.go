@@ -12,14 +12,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/mwaa"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
@@ -194,6 +197,18 @@ func (f *ClientFactory) ECSClient(creds SessionCredentials) *ecs.Client {
 
 func (f *ClientFactory) SNSClient(creds SessionCredentials) *sns.Client {
 	return sns.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) MWAAClient(creds SessionCredentials) *mwaa.Client {
+	return mwaa.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) SageMakerClient(creds SessionCredentials) *sagemaker.Client {
+	return sagemaker.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) ConfigServiceClient(creds SessionCredentials) *configservice.Client {
+	return configservice.NewFromConfig(f.awsConfig(creds))
 }
 
 // EC2ClientForRegion creates an EC2 client overriding the session region.

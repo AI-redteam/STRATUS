@@ -580,4 +580,14 @@ func RegisterBuiltinModules(reg *Registry, factory *stratusaws.ClientFactory, gs
 
 	// SNS modules
 	reg.Register(&SNSEnumerateModule{factory: factory})
+
+	// MWAA modules
+	reg.Register(&MWAAEnumerateModule{factory: factory, graph: gs})
+
+	// SageMaker modules
+	reg.Register(&SageMakerEnumerateModule{factory: factory})
+	reg.Register(&SageMakerPrivescCheckModule{factory: factory})
+
+	// AWS Config modules
+	reg.Register(&ConfigEnumerateModule{factory: factory})
 }

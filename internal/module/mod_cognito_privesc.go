@@ -116,9 +116,9 @@ func (m *CognitoPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress) s
 			// Technique 1: Unauthenticated IAM credential theft
 			if detail.AllowUnauthenticated {
 				target := map[string]any{
-					"pool_id":   pool.PoolID,
-					"pool_name": pool.PoolName,
-					"role_arn":  roles.UnauthenticatedRole,
+					"pool_id":      pool.PoolID,
+					"pool_name":    pool.PoolName,
+					"role_arn":     roles.UnauthenticatedRole,
 					"classic_flow": detail.AllowClassicFlow,
 				}
 				unauthTargets = append(unauthTargets, target)
@@ -131,37 +131,46 @@ func (m *CognitoPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress) s
 				}
 
 				privescPaths = append(privescPaths, map[string]any{
-					"technique":   "UnauthenticatedCredentials",
-					"severity":    severity,
-					"resource":    pool.PoolID,
-					"target_role": roles.UnauthenticatedRole,
-					"description": desc,
-					"required_permissions": []string{"(none — unauthenticated)"},
+					"finding":          "UnauthenticatedCredentials",
+					"severity":         severity,
+					"principal_type":   "cognito_identity_pool",
+					"principal_name":   pool.PoolName,
+					"principal_arn":    pool.PoolID,
+					"target_role":     roles.UnauthenticatedRole,
+					"description":     desc,
+					"required_actions": []string{"(none — unauthenticated)"},
+					"reference":        "T1078.004",
 				})
 			}
 
 			// Technique 2: SetIdentityPoolRoles — assign arbitrary roles
 			privescPaths = append(privescPaths, map[string]any{
-				"technique":   "SetIdentityPoolRoles",
-				"severity":    "critical",
-				"resource":    pool.PoolID,
-				"target_role": roles.AuthenticatedRole,
-				"description": fmt.Sprintf("cognito-identity:SetIdentityPoolRoles on %s can replace the authenticated/unauthenticated role mappings with any IAM role. Combined with GetCredentialsForIdentity for full role access.", pool.PoolName),
-				"required_permissions": []string{
+				"finding":          "SetIdentityPoolRoles",
+				"severity":         "critical",
+				"principal_type":   "cognito_identity_pool",
+				"principal_name":   pool.PoolName,
+				"principal_arn":    pool.PoolID,
+				"target_role":     roles.AuthenticatedRole,
+				"description":     fmt.Sprintf("cognito-identity:SetIdentityPoolRoles on %s can replace the authenticated/unauthenticated role mappings with any IAM role. Combined with GetCredentialsForIdentity for full role access.", pool.PoolName),
+				"required_actions": []string{
 					"cognito-identity:SetIdentityPoolRoles",
 					"iam:PassRole",
 				},
+				"reference": "T1098",
 			})
 
 			// Technique 3: UpdateIdentityPool — inject attacker IdP or enable unauth
 			privescPaths = append(privescPaths, map[string]any{
-				"technique":   "UpdateIdentityPool",
-				"severity":    "critical",
-				"resource":    pool.PoolID,
-				"description": fmt.Sprintf("cognito-identity:UpdateIdentityPool on %s can: (1) add attacker-controlled identity providers, (2) enable unauthenticated access, (3) enable classic flow to bypass session policy restrictions.", pool.PoolName),
-				"required_permissions": []string{
+				"finding":          "UpdateIdentityPool",
+				"severity":         "critical",
+				"principal_type":   "cognito_identity_pool",
+				"principal_name":   pool.PoolName,
+				"principal_arn":    pool.PoolID,
+				"description":     fmt.Sprintf("cognito-identity:UpdateIdentityPool on %s can: (1) add attacker-controlled identity providers, (2) enable unauthenticated access, (3) enable classic flow to bypass session policy restrictions.", pool.PoolName),
+				"required_actions": []string{
 					"cognito-identity:UpdateIdentityPool",
 				},
+				"reference": "T1098",
 			})
 		}
 	}
@@ -184,47 +193,59 @@ func (m *CognitoPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress) s
 			// Technique 4: Self-registration for authenticated IAM role
 			if detail.SelfSignUpEnabled {
 				privescPaths = append(privescPaths, map[string]any{
-					"technique":   "SelfRegistration",
-					"severity":    "high",
-					"resource":    pool.PoolID,
-					"description": fmt.Sprintf("User Pool %s (%s) allows self-registration. Create an account with cognito-idp:SignUp, confirm it, authenticate, then use the ID token with a linked Identity Pool to obtain authenticated IAM role credentials.", detail.PoolName, pool.PoolID),
-					"required_permissions": []string{"(none — self-registration)"},
+					"finding":          "SelfRegistration",
+					"severity":         "high",
+					"principal_type":   "cognito_user_pool",
+					"principal_name":   detail.PoolName,
+					"principal_arn":    pool.PoolID,
+					"description":     fmt.Sprintf("User Pool %s (%s) allows self-registration. Create an account with cognito-idp:SignUp, confirm it, authenticate, then use the ID token with a linked Identity Pool to obtain authenticated IAM role credentials.", detail.PoolName, pool.PoolID),
+					"required_actions": []string{"(none — self-registration)"},
+					"reference":        "T1136",
 				})
 			}
 
 			// Technique 5: MFA bypass
 			if detail.MFAConfiguration != "ON" {
 				privescPaths = append(privescPaths, map[string]any{
-					"technique":   "MFABypass",
-					"severity":    "medium",
-					"resource":    pool.PoolID,
-					"description": fmt.Sprintf("User Pool %s MFA is %s. With cognito-idp:SetUserPoolMfaConfig or AdminSetUserMFAPreference, MFA can be disabled or redirected to attacker-controlled device.", detail.PoolName, detail.MFAConfiguration),
-					"required_permissions": []string{
+					"finding":          "MFABypass",
+					"severity":         "medium",
+					"principal_type":   "cognito_user_pool",
+					"principal_name":   detail.PoolName,
+					"principal_arn":    pool.PoolID,
+					"description":     fmt.Sprintf("User Pool %s MFA is %s. With cognito-idp:SetUserPoolMfaConfig or AdminSetUserMFAPreference, MFA can be disabled or redirected to attacker-controlled device.", detail.PoolName, detail.MFAConfiguration),
+					"required_actions": []string{
 						"cognito-idp:SetUserPoolMfaConfig",
 					},
+					"reference": "T1098",
 				})
 			}
 
 			// Technique 6: AdminSetUserPassword — impersonate any user
 			privescPaths = append(privescPaths, map[string]any{
-				"technique":   "AdminSetUserPassword",
-				"severity":    "critical",
-				"resource":    pool.PoolID,
-				"description": fmt.Sprintf("cognito-idp:AdminSetUserPassword on User Pool %s can set any user's password, enabling full account impersonation (bypasses MFA if set to permanent).", detail.PoolName),
-				"required_permissions": []string{
+				"finding":          "AdminSetUserPassword",
+				"severity":         "critical",
+				"principal_type":   "cognito_user_pool",
+				"principal_name":   detail.PoolName,
+				"principal_arn":    pool.PoolID,
+				"description":     fmt.Sprintf("cognito-idp:AdminSetUserPassword on User Pool %s can set any user's password, enabling full account impersonation (bypasses MFA if set to permanent).", detail.PoolName),
+				"required_actions": []string{
 					"cognito-idp:AdminSetUserPassword",
 				},
+				"reference": "T1098",
 			})
 
 			// Technique 7: AdminCreateUser
 			privescPaths = append(privescPaths, map[string]any{
-				"technique":   "AdminCreateUser",
-				"severity":    "high",
-				"resource":    pool.PoolID,
-				"description": fmt.Sprintf("cognito-idp:AdminCreateUser on User Pool %s can create arbitrary users with controlled attributes, bypassing self-registration restrictions.", detail.PoolName),
-				"required_permissions": []string{
+				"finding":          "AdminCreateUser",
+				"severity":         "high",
+				"principal_type":   "cognito_user_pool",
+				"principal_name":   detail.PoolName,
+				"principal_arn":    pool.PoolID,
+				"description":     fmt.Sprintf("cognito-idp:AdminCreateUser on User Pool %s can create arbitrary users with controlled attributes, bypassing self-registration restrictions.", detail.PoolName),
+				"required_actions": []string{
 					"cognito-idp:AdminCreateUser",
 				},
+				"reference": "T1136",
 			})
 
 			// Enumerate groups with IAM roles
@@ -236,27 +257,33 @@ func (m *CognitoPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress) s
 
 						// Technique 8: AdminAddUserToGroup — escalate to group role
 						privescPaths = append(privescPaths, map[string]any{
-							"technique":   "AdminAddUserToGroup",
-							"severity":    "high",
-							"resource":    fmt.Sprintf("%s/group/%s", pool.PoolID, g.GroupName),
-							"target_role": g.RoleARN,
-							"description": fmt.Sprintf("cognito-idp:AdminAddUserToGroup can add any user to group %s in User Pool %s, granting access to IAM role %s.", g.GroupName, detail.PoolName, g.RoleARN),
-							"required_permissions": []string{
+							"finding":          "AdminAddUserToGroup",
+							"severity":         "high",
+							"principal_type":   "cognito_user_pool_group",
+							"principal_name":   fmt.Sprintf("%s/%s", detail.PoolName, g.GroupName),
+							"principal_arn":    fmt.Sprintf("%s/group/%s", pool.PoolID, g.GroupName),
+							"target_role":     g.RoleARN,
+							"description":     fmt.Sprintf("cognito-idp:AdminAddUserToGroup can add any user to group %s in User Pool %s, granting access to IAM role %s.", g.GroupName, detail.PoolName, g.RoleARN),
+							"required_actions": []string{
 								"cognito-idp:AdminAddUserToGroup",
 							},
+							"reference": "T1098",
 						})
 
 						// Technique 9: CreateGroup/UpdateGroup with iam:PassRole
 						privescPaths = append(privescPaths, map[string]any{
-							"technique":   "CreateGroupWithRole",
-							"severity":    "critical",
-							"resource":    pool.PoolID,
-							"target_role": g.RoleARN,
-							"description": fmt.Sprintf("cognito-idp:CreateGroup or UpdateGroup with iam:PassRole on User Pool %s can create/modify groups with arbitrary IAM roles.", detail.PoolName),
-							"required_permissions": []string{
+							"finding":          "CreateGroupWithRole",
+							"severity":         "critical",
+							"principal_type":   "cognito_user_pool",
+							"principal_name":   detail.PoolName,
+							"principal_arn":    pool.PoolID,
+							"target_role":     g.RoleARN,
+							"description":     fmt.Sprintf("cognito-idp:CreateGroup or UpdateGroup with iam:PassRole on User Pool %s can create/modify groups with arbitrary IAM roles.", detail.PoolName),
+							"required_actions": []string{
 								"cognito-idp:CreateGroup",
 								"iam:PassRole",
 							},
+							"reference": "T1098",
 						})
 					}
 				}
@@ -264,35 +291,44 @@ func (m *CognitoPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress) s
 
 			// Technique 10: CreateIdentityProvider for persistence
 			privescPaths = append(privescPaths, map[string]any{
-				"technique":   "CreateIdentityProvider",
-				"severity":    "high",
-				"resource":    pool.PoolID,
-				"description": fmt.Sprintf("cognito-idp:CreateIdentityProvider on User Pool %s can add an attacker-controlled SAML/OIDC identity provider for persistent access.", detail.PoolName),
-				"required_permissions": []string{
+				"finding":          "CreateIdentityProvider",
+				"severity":         "high",
+				"principal_type":   "cognito_user_pool",
+				"principal_name":   detail.PoolName,
+				"principal_arn":    pool.PoolID,
+				"description":     fmt.Sprintf("cognito-idp:CreateIdentityProvider on User Pool %s can add an attacker-controlled SAML/OIDC identity provider for persistent access.", detail.PoolName),
+				"required_actions": []string{
 					"cognito-idp:CreateIdentityProvider",
 				},
+				"reference": "T1098",
 			})
 
 			// Technique 11: CreateUserPoolClient — create permissive client
 			privescPaths = append(privescPaths, map[string]any{
-				"technique":   "CreateUserPoolClient",
-				"severity":    "medium",
-				"resource":    pool.PoolID,
-				"description": fmt.Sprintf("cognito-idp:CreateUserPoolClient on User Pool %s can create a new app client with all auth flows enabled, no client secret, extended token validity, and token revocation disabled.", detail.PoolName),
-				"required_permissions": []string{
+				"finding":          "CreateUserPoolClient",
+				"severity":         "medium",
+				"principal_type":   "cognito_user_pool",
+				"principal_name":   detail.PoolName,
+				"principal_arn":    pool.PoolID,
+				"description":     fmt.Sprintf("cognito-idp:CreateUserPoolClient on User Pool %s can create a new app client with all auth flows enabled, no client secret, extended token validity, and token revocation disabled.", detail.PoolName),
+				"required_actions": []string{
 					"cognito-idp:CreateUserPoolClient",
 				},
+				"reference": "T1098",
 			})
 
 			// Technique 12: SetRiskConfiguration — disable compromise detection
 			privescPaths = append(privescPaths, map[string]any{
-				"technique":   "DisableCompromiseDetection",
-				"severity":    "medium",
-				"resource":    pool.PoolID,
-				"description": fmt.Sprintf("cognito-idp:SetRiskConfiguration on User Pool %s can disable Advanced Security compromise detection, allowing credential stuffing and account takeover without alerts.", detail.PoolName),
-				"required_permissions": []string{
+				"finding":          "DisableCompromiseDetection",
+				"severity":         "medium",
+				"principal_type":   "cognito_user_pool",
+				"principal_name":   detail.PoolName,
+				"principal_arn":    pool.PoolID,
+				"description":     fmt.Sprintf("cognito-idp:SetRiskConfiguration on User Pool %s can disable Advanced Security compromise detection, allowing credential stuffing and account takeover without alerts.", detail.PoolName),
+				"required_actions": []string{
 					"cognito-idp:SetRiskConfiguration",
 				},
+				"reference": "T1098",
 			})
 		}
 	}
@@ -300,50 +336,61 @@ func (m *CognitoPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress) s
 	// --- Step 3: AdminUpdateUserAttributes for app-level privesc ---
 	prog.Update(3, "Checking attribute manipulation paths")
 
-	if len(userPools) > 0 {
-		for _, pool := range userPools {
-			if pool.PoolID == "" {
-				continue
+	if userPools != nil {
+		for i, pool := range userPools {
+			if i >= maxPools || pool.PoolID == "" {
+				break
 			}
 			privescPaths = append(privescPaths, map[string]any{
-				"technique":   "AdminUpdateUserAttributes",
-				"severity":    "medium",
-				"resource":    pool.PoolID,
-				"description": fmt.Sprintf("cognito-idp:AdminUpdateUserAttributes on User Pool %s can modify custom attributes (e.g., isAdmin, role, tier) for application-level privilege escalation, or change email/phone for account impersonation.", pool.PoolName),
-				"required_permissions": []string{
+				"finding":          "AdminUpdateUserAttributes",
+				"severity":         "medium",
+				"principal_type":   "cognito_user_pool",
+				"principal_name":   pool.PoolName,
+				"principal_arn":    pool.PoolID,
+				"description":     fmt.Sprintf("cognito-idp:AdminUpdateUserAttributes on User Pool %s can modify custom attributes (e.g., isAdmin, role, tier) for application-level privilege escalation, or change email/phone for account impersonation.", pool.PoolName),
+				"required_actions": []string{
 					"cognito-idp:AdminUpdateUserAttributes",
 				},
+				"reference": "T1098",
 			})
-			break // One entry covers all pools
 		}
 	}
 
 	prog.Update(4, "Building summary")
 
-	techniqueCounts := make(map[string]int)
+	findingCounts := make(map[string]int)
 	severityCounts := make(map[string]int)
 	for _, p := range privescPaths {
-		if t, ok := p["technique"].(string); ok {
-			techniqueCounts[t]++
+		if t, ok := p["finding"].(string); ok {
+			findingCounts[t]++
 		}
 		if s, ok := p["severity"].(string); ok {
 			severityCounts[s]++
 		}
 	}
 
+	userPoolCount := len(userPools)
+	if userPoolCount > maxPools {
+		userPoolCount = maxPools
+	}
+	identityPoolCount := len(identityPools)
+	if identityPoolCount > maxPools {
+		identityPoolCount = maxPools
+	}
+
 	return sdk.RunResult{
 		Outputs: map[string]any{
-			"privesc_paths":          privescPaths,
-			"path_count":             len(privescPaths),
+			"privesc_paths":           privescPaths,
+			"path_count":              len(privescPaths),
 			"unauthenticated_targets": unauthTargets,
 			"summary": map[string]any{
-				"total_paths":       len(privescPaths),
-				"unique_roles":      len(roleSet),
-				"user_pools":        len(userPools),
-				"identity_pools":    len(identityPools),
-				"unauth_targets":    len(unauthTargets),
-				"technique_counts":  techniqueCounts,
-				"severity_counts":   severityCounts,
+				"total_paths":      len(privescPaths),
+				"unique_roles":     len(roleSet),
+				"user_pools":       userPoolCount,
+				"identity_pools":   identityPoolCount,
+				"unauth_targets":   len(unauthTargets),
+				"finding_counts":   findingCounts,
+				"severity_counts":  severityCounts,
 			},
 		},
 	}

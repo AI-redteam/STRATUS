@@ -101,6 +101,19 @@ func (m *SageMakerPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 	prog.Update(1, "Checking notebook instances for presigned URL targets")
 
 	notebooks, err := m.factory.ListSageMakerNotebookInstances(bgCtx, creds)
+	if err != nil {
+		// Surface error as a finding rather than silently ignoring
+		privescPaths = append(privescPaths, map[string]any{
+			"finding":          "ListNotebooksFailed",
+			"severity":         "info",
+			"principal_type":   "sagemaker_service",
+			"principal_name":   "SageMaker",
+			"principal_arn":    "",
+			"description":     fmt.Sprintf("Could not list notebook instances: %v", err),
+			"required_actions": []string{},
+			"reference":        "",
+		})
+	}
 	if err == nil {
 		for i, nb := range notebooks {
 			if i >= maxItems {
@@ -118,20 +131,22 @@ func (m *SageMakerPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 			// Running notebooks are presigned URL targets
 			if detail.Status == "InService" && detail.RoleARN != "" {
 				privescPaths = append(privescPaths, map[string]any{
-					"technique":     "PresignedNotebookURL",
-					"severity":      "high",
-					"resource_name": detail.NotebookName,
-					"resource_arn":  detail.NotebookARN,
-					"target_role":   detail.RoleARN,
-					"description":   "Running notebook instance can be accessed via CreatePresignedNotebookInstanceUrl. Terminal access yields IMDS credentials for the attached role.",
-					"required_permissions": []string{
+					"finding":          "PresignedNotebookURL",
+					"severity":         "high",
+					"principal_type":   "sagemaker_notebook",
+					"principal_name":   detail.NotebookName,
+					"principal_arn":    detail.NotebookARN,
+					"target_role":     detail.RoleARN,
+					"description":     "Running notebook instance can be accessed via CreatePresignedNotebookInstanceUrl. Terminal access yields IMDS credentials for the attached role.",
+					"required_actions": []string{
 						"sagemaker:CreatePresignedNotebookInstanceUrl",
 					},
+					"reference": "T1078.004",
 				})
 
 				highValueRoles = append(highValueRoles, map[string]any{
 					"role_arn":      detail.RoleARN,
-					"attached_to":   fmt.Sprintf("notebook/%s", detail.NotebookName),
+					"attached_to":  fmt.Sprintf("notebook/%s", detail.NotebookName),
 					"access_method": "presigned_url",
 				})
 			}
@@ -139,30 +154,34 @@ func (m *SageMakerPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 			// Internet-enabled notebooks allow credential exfiltration
 			if detail.Status == "InService" && detail.DirectInternetAccess == "Enabled" {
 				privescPaths = append(privescPaths, map[string]any{
-					"technique":     "NotebookCredentialExfil",
-					"severity":      "high",
-					"resource_name": detail.NotebookName,
-					"resource_arn":  detail.NotebookARN,
-					"target_role":   detail.RoleARN,
-					"description":   "Internet-enabled notebook allows exfiltrating IMDS credentials to external endpoints.",
-					"required_permissions": []string{
+					"finding":          "NotebookCredentialExfil",
+					"severity":         "high",
+					"principal_type":   "sagemaker_notebook",
+					"principal_name":   detail.NotebookName,
+					"principal_arn":    detail.NotebookARN,
+					"target_role":     detail.RoleARN,
+					"description":     "Internet-enabled notebook allows exfiltrating IMDS credentials to external endpoints.",
+					"required_actions": []string{
 						"sagemaker:CreatePresignedNotebookInstanceUrl",
 					},
+					"reference": "T1059",
 				})
 			}
 
 			// Root access notebooks allow deeper persistence
 			if detail.RootAccess == "Enabled" {
 				privescPaths = append(privescPaths, map[string]any{
-					"technique":     "NotebookRootPersistence",
-					"severity":      "medium",
-					"resource_name": detail.NotebookName,
-					"resource_arn":  detail.NotebookARN,
-					"target_role":   detail.RoleARN,
-					"description":   "Notebook with root access enables system-level persistence (cron jobs, modified packages, kernel backdoors).",
-					"required_permissions": []string{
+					"finding":          "NotebookRootPersistence",
+					"severity":         "medium",
+					"principal_type":   "sagemaker_notebook",
+					"principal_name":   detail.NotebookName,
+					"principal_arn":    detail.NotebookARN,
+					"target_role":     detail.RoleARN,
+					"description":     "Notebook with root access enables system-level persistence (cron jobs, modified packages, kernel backdoors).",
+					"required_actions": []string{
 						"sagemaker:CreatePresignedNotebookInstanceUrl",
 					},
+					"reference": "T1059",
 				})
 			}
 		}
@@ -172,6 +191,18 @@ func (m *SageMakerPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 	prog.Update(2, "Checking Studio domains for presigned URL and role swapping paths")
 
 	domains, err := m.factory.ListSageMakerDomains(bgCtx, creds)
+	if err != nil {
+		privescPaths = append(privescPaths, map[string]any{
+			"finding":          "ListDomainsFailed",
+			"severity":         "info",
+			"principal_type":   "sagemaker_service",
+			"principal_name":   "SageMaker",
+			"principal_arn":    "",
+			"description":     fmt.Sprintf("Could not list Studio domains: %v", err),
+			"required_actions": []string{},
+			"reference":        "",
+		})
+	}
 	if err == nil {
 		for i, d := range domains {
 			if i >= maxItems {
@@ -187,36 +218,40 @@ func (m *SageMakerPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 
 				// Domain presigned URL path
 				privescPaths = append(privescPaths, map[string]any{
-					"technique":     "PresignedDomainURL",
-					"severity":      "high",
-					"resource_name": detail.DomainName,
-					"resource_arn":  detail.DomainARN,
-					"target_role":   detail.DefaultExecutionRole,
-					"description":   "Studio domain can be accessed via CreatePresignedDomainUrl. Grants browser session with the profile's ExecutionRole.",
-					"required_permissions": []string{
+					"finding":          "PresignedDomainURL",
+					"severity":         "high",
+					"principal_type":   "sagemaker_domain",
+					"principal_name":   detail.DomainName,
+					"principal_arn":    detail.DomainARN,
+					"target_role":     detail.DefaultExecutionRole,
+					"description":     "Studio domain can be accessed via CreatePresignedDomainUrl. Grants browser session with the profile's ExecutionRole.",
+					"required_actions": []string{
 						"sagemaker:CreatePresignedDomainUrl",
 					},
+					"reference": "T1078.004",
 				})
 
 				// Domain role swapping path
 				privescPaths = append(privescPaths, map[string]any{
-					"technique":     "DomainRoleSwap",
-					"severity":      "critical",
-					"resource_name": detail.DomainName,
-					"resource_arn":  detail.DomainARN,
-					"target_role":   detail.DefaultExecutionRole,
-					"description":   "UpdateDomain can modify DefaultUserSettings.ExecutionRole so new apps inherit an elevated role. Combined with CreateApp + CreatePresignedDomainUrl for full escalation.",
-					"required_permissions": []string{
+					"finding":          "DomainRoleSwap",
+					"severity":         "critical",
+					"principal_type":   "sagemaker_domain",
+					"principal_name":   detail.DomainName,
+					"principal_arn":    detail.DomainARN,
+					"target_role":     detail.DefaultExecutionRole,
+					"description":     "UpdateDomain can modify DefaultUserSettings.ExecutionRole so new apps inherit an elevated role. Combined with CreateApp + CreatePresignedDomainUrl for full escalation.",
+					"required_actions": []string{
 						"sagemaker:UpdateDomain",
 						"iam:PassRole",
 						"sagemaker:CreateApp",
 						"sagemaker:CreatePresignedDomainUrl",
 					},
+					"reference": "T1098",
 				})
 
 				highValueRoles = append(highValueRoles, map[string]any{
 					"role_arn":      detail.DefaultExecutionRole,
-					"attached_to":   fmt.Sprintf("domain/%s", detail.DomainID),
+					"attached_to":  fmt.Sprintf("domain/%s", detail.DomainID),
 					"access_method": "presigned_url",
 				})
 			}
@@ -246,18 +281,20 @@ func (m *SageMakerPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 
 					// Profile-specific role modification
 					privescPaths = append(privescPaths, map[string]any{
-						"technique":     "UserProfileRoleSwap",
-						"severity":      "high",
-						"resource_name": fmt.Sprintf("%s/%s", p.DomainID, p.UserProfileName),
-						"resource_arn":  detail.UserProfileARN,
-						"target_role":   detail.ExecutionRole,
-						"description":   "UpdateUserProfile can change execution role to a higher-privilege alternative. Combined with CreateApp + CreatePresignedDomainUrl.",
-						"required_permissions": []string{
+						"finding":          "UserProfileRoleSwap",
+						"severity":         "high",
+						"principal_type":   "sagemaker_user_profile",
+						"principal_name":   fmt.Sprintf("%s/%s", p.DomainID, p.UserProfileName),
+						"principal_arn":    detail.UserProfileARN,
+						"target_role":     detail.ExecutionRole,
+						"description":     "UpdateUserProfile can change execution role to a higher-privilege alternative. Combined with CreateApp + CreatePresignedDomainUrl.",
+						"required_actions": []string{
 							"sagemaker:UpdateUserProfile",
 							"iam:PassRole",
 							"sagemaker:CreateApp",
 							"sagemaker:CreatePresignedDomainUrl",
 						},
+						"reference": "T1098",
 					})
 				}
 			}
@@ -303,14 +340,18 @@ func (m *SageMakerPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 
 	if len(persistenceVectors) > 0 {
 		privescPaths = append(privescPaths, map[string]any{
-			"technique":     "LifecycleConfigInjection",
-			"severity":      "high",
-			"resource_name": fmt.Sprintf("%d lifecycle configs", len(persistenceVectors)),
-			"description":   "Existing lifecycle configs can be modified or new ones created and attached to notebooks/domains for persistent code execution on every start.",
-			"required_permissions": []string{
+			"finding":          "LifecycleConfigInjection",
+			"severity":         "high",
+			"principal_type":   "sagemaker_lifecycle_config",
+			"principal_name":   fmt.Sprintf("%d lifecycle configs", len(persistenceVectors)),
+			"principal_arn":    "",
+			"target_role":     "",
+			"description":     "Existing lifecycle configs can be modified or new ones created and attached to notebooks/domains for persistent code execution on every start.",
+			"required_actions": []string{
 				"sagemaker:CreateNotebookInstanceLifecycleConfig",
 				"sagemaker:UpdateNotebookInstance",
 			},
+			"reference": "T1059",
 		})
 	}
 
@@ -324,35 +365,41 @@ func (m *SageMakerPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 			roleName = role[idx+1:]
 		}
 		privescPaths = append(privescPaths, map[string]any{
-			"technique":     "TrainingJobCodeExec",
-			"severity":      "medium",
-			"resource_name": roleName,
-			"target_role":   role,
-			"description":   "CreateTrainingJob with iam:PassRole can launch a training container with this execution role. Container entrypoint can exfiltrate role credentials via IMDS.",
-			"required_permissions": []string{
+			"finding":          "TrainingJobCodeExec",
+			"severity":         "medium",
+			"principal_type":   "iam_role",
+			"principal_name":   roleName,
+			"principal_arn":    role,
+			"target_role":     role,
+			"description":     "CreateTrainingJob with iam:PassRole can launch a training container with this execution role. Container entrypoint can exfiltrate role credentials via IMDS.",
+			"required_actions": []string{
 				"sagemaker:CreateTrainingJob",
 				"iam:PassRole",
 			},
+			"reference": "T1059",
 		})
 		privescPaths = append(privescPaths, map[string]any{
-			"technique":     "ProcessingJobCodeExec",
-			"severity":      "medium",
-			"resource_name": roleName,
-			"target_role":   role,
-			"description":   "CreateProcessingJob with iam:PassRole can launch a processing container with this execution role.",
-			"required_permissions": []string{
+			"finding":          "ProcessingJobCodeExec",
+			"severity":         "medium",
+			"principal_type":   "iam_role",
+			"principal_name":   roleName,
+			"principal_arn":    role,
+			"target_role":     role,
+			"description":     "CreateProcessingJob with iam:PassRole can launch a processing container with this execution role.",
+			"required_actions": []string{
 				"sagemaker:CreateProcessingJob",
 				"iam:PassRole",
 			},
+			"reference": "T1059",
 		})
 	}
 
 	// Build summary
-	techniqueCounts := make(map[string]int)
+	findingCounts := make(map[string]int)
 	severityCounts := make(map[string]int)
 	for _, p := range privescPaths {
-		if t, ok := p["technique"].(string); ok {
-			techniqueCounts[t]++
+		if t, ok := p["finding"].(string); ok {
+			findingCounts[t]++
 		}
 		if s, ok := p["severity"].(string); ok {
 			severityCounts[s]++
@@ -366,10 +413,10 @@ func (m *SageMakerPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 			"high_value_roles":    highValueRoles,
 			"persistence_vectors": persistenceVectors,
 			"summary": map[string]any{
-				"total_paths":      len(privescPaths),
-				"unique_roles":     len(roleSet),
-				"technique_counts": techniqueCounts,
-				"severity_counts":  severityCounts,
+				"total_paths":     len(privescPaths),
+				"unique_roles":    len(roleSet),
+				"finding_counts":  findingCounts,
+				"severity_counts": severityCounts,
 			},
 		},
 	}

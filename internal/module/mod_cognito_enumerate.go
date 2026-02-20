@@ -85,10 +85,10 @@ func (m *CognitoEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.
 		maxPools = 60
 	}
 
-	var findings []map[string]any
-	var userPoolResults []map[string]any
-	var identityPoolResults []map[string]any
-	var groupsWithRoles []map[string]any
+	findings := make([]map[string]any, 0)
+	userPoolResults := make([]map[string]any, 0)
+	identityPoolResults := make([]map[string]any, 0)
+	groupsWithRoles := make([]map[string]any, 0)
 	roleSet := make(map[string]bool)
 
 	steps := 0
@@ -112,9 +112,12 @@ func (m *CognitoEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.
 				"resource": "user_pools", "finding": "ListFailed", "severity": "info",
 				"detail": fmt.Sprintf("could not list user pools: %v", err),
 			})
-		} else {
-			step++
-			prog.Update(step, "Describing User Pools")
+		}
+
+		step++
+		prog.Update(step, "Describing User Pools")
+
+		if err == nil {
 
 			for i, pool := range userPools {
 				if i >= maxPools {
@@ -215,14 +218,12 @@ func (m *CognitoEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.
 					}
 					entry["identity_providers"] = idpList
 
-					if len(idps) > 0 {
-						findings = append(findings, map[string]any{
-							"resource": fmt.Sprintf("user_pool/%s", detail.PoolID),
-							"finding":  "ExternalIdPConfigured",
-							"severity": "info",
-							"detail":   fmt.Sprintf("User Pool %s has %d external identity providers. These could be manipulated via cognito-idp:CreateIdentityProvider or UpdateIdentityProvider for persistence.", detail.PoolName, len(idps)),
-						})
-					}
+					findings = append(findings, map[string]any{
+						"resource": fmt.Sprintf("user_pool/%s", detail.PoolID),
+						"finding":  "ExternalIdPConfigured",
+						"severity": "info",
+						"detail":   fmt.Sprintf("User Pool %s has %d external identity providers. These could be manipulated via cognito-idp:CreateIdentityProvider or UpdateIdentityProvider for persistence.", detail.PoolName, len(idps)),
+					})
 				}
 
 				userPoolResults = append(userPoolResults, entry)
@@ -241,9 +242,12 @@ func (m *CognitoEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.
 				"resource": "identity_pools", "finding": "ListFailed", "severity": "info",
 				"detail": fmt.Sprintf("could not list identity pools: %v", err),
 			})
-		} else {
-			step++
-			prog.Update(step, "Describing Identity Pools")
+		}
+
+		step++
+		prog.Update(step, "Describing Identity Pools")
+
+		if err == nil {
 
 			for i, pool := range identityPools {
 				if i >= maxPools {
@@ -325,7 +329,7 @@ func (m *CognitoEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.
 		}
 	}
 
-	var roles []string
+	roles := make([]string, 0, len(roleSet))
 	for r := range roleSet {
 		roles = append(roles, r)
 	}

@@ -22,6 +22,8 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
@@ -3001,3 +3003,377 @@ func (f *ClientFactory) GetCognitoIdentityPoolRoles(ctx context.Context, creds S
 
 // Ensure cbtypes is used (for webhook filter type references)
 var _ = cbtypes.WebhookFilterTypeEvent
+
+// Ensure ekstypes is used
+var _ = ekstypes.ClusterStatusActive
+
+// ---- EKS operations ----
+
+// EKSClusterSummary holds EKS cluster metadata.
+type EKSClusterSummary struct {
+	Name                   string            `json:"name"`
+	ARN                    string            `json:"arn"`
+	Status                 string            `json:"status"`
+	Version                string            `json:"version"`
+	PlatformVersion        string            `json:"platform_version"`
+	Endpoint               string            `json:"endpoint"`
+	RoleARN                string            `json:"role_arn"`
+	EndpointPublicAccess   bool              `json:"endpoint_public_access"`
+	EndpointPrivateAccess  bool              `json:"endpoint_private_access"`
+	PublicAccessCIDRs      []string          `json:"public_access_cidrs,omitempty"`
+	SecurityGroupIDs       []string          `json:"security_group_ids,omitempty"`
+	SubnetIDs              []string          `json:"subnet_ids,omitempty"`
+	VPCID                  string            `json:"vpc_id,omitempty"`
+	OIDCIssuer             string            `json:"oidc_issuer,omitempty"`
+	Logging                EKSLoggingConfig  `json:"logging"`
+	EncryptionConfig       []EKSEncryption   `json:"encryption_config,omitempty"`
+	Tags                   map[string]string `json:"tags,omitempty"`
+	Created                string            `json:"created,omitempty"`
+}
+
+// EKSLoggingConfig holds cluster logging config.
+type EKSLoggingConfig struct {
+	EnabledTypes  []string `json:"enabled_types,omitempty"`
+	DisabledTypes []string `json:"disabled_types,omitempty"`
+}
+
+// EKSEncryption holds encryption configuration.
+type EKSEncryption struct {
+	Resources []string `json:"resources,omitempty"`
+	KeyARN    string   `json:"key_arn,omitempty"`
+}
+
+// EKSNodeGroupSummary holds node group metadata.
+type EKSNodeGroupSummary struct {
+	Name           string   `json:"name"`
+	ARN            string   `json:"arn"`
+	ClusterName    string   `json:"cluster_name"`
+	Status         string   `json:"status"`
+	NodeRoleARN    string   `json:"node_role_arn"`
+	InstanceTypes  []string `json:"instance_types,omitempty"`
+	AMIType        string   `json:"ami_type"`
+	CapacityType   string   `json:"capacity_type"`
+	DiskSize       int32    `json:"disk_size"`
+	DesiredSize    int32    `json:"desired_size"`
+	MinSize        int32    `json:"min_size"`
+	MaxSize        int32    `json:"max_size"`
+	SubnetIDs      []string `json:"subnet_ids,omitempty"`
+	RemoteAccess   *EKSRemoteAccess `json:"remote_access,omitempty"`
+	LaunchTemplate *EKSLaunchTemplate `json:"launch_template,omitempty"`
+}
+
+// EKSRemoteAccess holds remote access config.
+type EKSRemoteAccess struct {
+	EC2SSHKey            string   `json:"ec2_ssh_key,omitempty"`
+	SourceSecurityGroups []string `json:"source_security_groups,omitempty"`
+}
+
+// EKSLaunchTemplate holds launch template info.
+type EKSLaunchTemplate struct {
+	Name    string `json:"name,omitempty"`
+	ID      string `json:"id,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+// EKSFargateProfileSummary holds Fargate profile metadata.
+type EKSFargateProfileSummary struct {
+	Name                 string                  `json:"name"`
+	ARN                  string                  `json:"arn"`
+	ClusterName          string                  `json:"cluster_name"`
+	Status               string                  `json:"status"`
+	PodExecutionRoleARN  string                  `json:"pod_execution_role_arn"`
+	SubnetIDs            []string                `json:"subnet_ids,omitempty"`
+	Selectors            []EKSFargateSelector    `json:"selectors,omitempty"`
+}
+
+// EKSFargateSelector holds a Fargate selector.
+type EKSFargateSelector struct {
+	Namespace string            `json:"namespace"`
+	Labels    map[string]string `json:"labels,omitempty"`
+}
+
+// EKSIdentityProviderSummary holds identity provider config.
+type EKSIdentityProviderSummary struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	IssuerURL  string `json:"issuer_url,omitempty"`
+	ClientID   string `json:"client_id,omitempty"`
+	Status     string `json:"status"`
+}
+
+// ListEKSClusters lists EKS cluster names.
+func (f *ClientFactory) ListEKSClusters(ctx context.Context, creds SessionCredentials) ([]string, error) {
+	cacheKey := "eks:clusters:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]string), nil
+	}
+
+	f.rateLimiter.Wait("eks")
+	f.logAPICall("eks", "ListClusters", nil, nil)
+
+	client := f.EKSClient(creds)
+	var names []string
+	var nextToken *string
+	for {
+		out, err := client.ListClusters(ctx, &eks.ListClustersInput{
+			NextToken: nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ListClusters: %w", err)
+		}
+		names = append(names, out.Clusters...)
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+		f.rateLimiter.Wait("eks")
+	}
+	f.cache.Put(cacheKey, names)
+	return names, nil
+}
+
+// DescribeEKSCluster returns detailed cluster info.
+func (f *ClientFactory) DescribeEKSCluster(ctx context.Context, creds SessionCredentials, name string) (*EKSClusterSummary, error) {
+	cacheKey := "eks:cluster:" + creds.AccessKeyID + ":" + creds.Region + ":" + name
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.(*EKSClusterSummary), nil
+	}
+
+	f.rateLimiter.Wait("eks")
+	f.logAPICall("eks", "DescribeCluster", map[string]string{"name": name}, nil)
+
+	client := f.EKSClient(creds)
+	out, err := client.DescribeCluster(ctx, &eks.DescribeClusterInput{
+		Name: &name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeCluster(%s): %w", name, err)
+	}
+
+	c := out.Cluster
+	summary := &EKSClusterSummary{
+		Name:            aws.ToString(c.Name),
+		ARN:             aws.ToString(c.Arn),
+		Status:          string(c.Status),
+		Version:         aws.ToString(c.Version),
+		PlatformVersion: aws.ToString(c.PlatformVersion),
+		Endpoint:        aws.ToString(c.Endpoint),
+		RoleARN:         aws.ToString(c.RoleArn),
+		Created:         safeTimePtr(c.CreatedAt),
+		Tags:            c.Tags,
+	}
+
+	if c.ResourcesVpcConfig != nil {
+		summary.EndpointPublicAccess = c.ResourcesVpcConfig.EndpointPublicAccess
+		summary.EndpointPrivateAccess = c.ResourcesVpcConfig.EndpointPrivateAccess
+		summary.PublicAccessCIDRs = c.ResourcesVpcConfig.PublicAccessCidrs
+		summary.SecurityGroupIDs = c.ResourcesVpcConfig.SecurityGroupIds
+		summary.SubnetIDs = c.ResourcesVpcConfig.SubnetIds
+		summary.VPCID = aws.ToString(c.ResourcesVpcConfig.VpcId)
+	}
+
+	if c.Identity != nil && c.Identity.Oidc != nil {
+		summary.OIDCIssuer = aws.ToString(c.Identity.Oidc.Issuer)
+	}
+
+	if c.Logging != nil {
+		for _, lc := range c.Logging.ClusterLogging {
+			for _, lt := range lc.Types {
+				if aws.ToBool(lc.Enabled) {
+					summary.Logging.EnabledTypes = append(summary.Logging.EnabledTypes, string(lt))
+				} else {
+					summary.Logging.DisabledTypes = append(summary.Logging.DisabledTypes, string(lt))
+				}
+			}
+		}
+	}
+
+	for _, ec := range c.EncryptionConfig {
+		enc := EKSEncryption{
+			Resources: ec.Resources,
+		}
+		if ec.Provider != nil {
+			enc.KeyARN = aws.ToString(ec.Provider.KeyArn)
+		}
+		summary.EncryptionConfig = append(summary.EncryptionConfig, enc)
+	}
+
+	f.cache.Put(cacheKey, summary)
+	return summary, nil
+}
+
+// ListEKSNodeGroups lists node groups for a cluster.
+func (f *ClientFactory) ListEKSNodeGroups(ctx context.Context, creds SessionCredentials, clusterName string) ([]string, error) {
+	f.rateLimiter.Wait("eks")
+	f.logAPICall("eks", "ListNodegroups", map[string]string{"cluster": clusterName}, nil)
+
+	client := f.EKSClient(creds)
+	var names []string
+	var nextToken *string
+	for {
+		out, err := client.ListNodegroups(ctx, &eks.ListNodegroupsInput{
+			ClusterName: &clusterName,
+			NextToken:   nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ListNodegroups(%s): %w", clusterName, err)
+		}
+		names = append(names, out.Nodegroups...)
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+		f.rateLimiter.Wait("eks")
+	}
+	return names, nil
+}
+
+// DescribeEKSNodeGroup returns detailed node group info.
+func (f *ClientFactory) DescribeEKSNodeGroup(ctx context.Context, creds SessionCredentials, clusterName, nodegroupName string) (*EKSNodeGroupSummary, error) {
+	f.rateLimiter.Wait("eks")
+	f.logAPICall("eks", "DescribeNodegroup", map[string]string{"cluster": clusterName, "nodegroup": nodegroupName}, nil)
+
+	client := f.EKSClient(creds)
+	out, err := client.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
+		ClusterName:   &clusterName,
+		NodegroupName: &nodegroupName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeNodegroup(%s/%s): %w", clusterName, nodegroupName, err)
+	}
+
+	ng := out.Nodegroup
+	summary := &EKSNodeGroupSummary{
+		Name:          aws.ToString(ng.NodegroupName),
+		ARN:           aws.ToString(ng.NodegroupArn),
+		ClusterName:   aws.ToString(ng.ClusterName),
+		Status:        string(ng.Status),
+		NodeRoleARN:   aws.ToString(ng.NodeRole),
+		InstanceTypes: ng.InstanceTypes,
+		AMIType:       string(ng.AmiType),
+		CapacityType:  string(ng.CapacityType),
+		DiskSize:      aws.ToInt32(ng.DiskSize),
+		SubnetIDs:     ng.Subnets,
+	}
+
+	if ng.ScalingConfig != nil {
+		summary.DesiredSize = aws.ToInt32(ng.ScalingConfig.DesiredSize)
+		summary.MinSize = aws.ToInt32(ng.ScalingConfig.MinSize)
+		summary.MaxSize = aws.ToInt32(ng.ScalingConfig.MaxSize)
+	}
+
+	if ng.RemoteAccess != nil {
+		summary.RemoteAccess = &EKSRemoteAccess{
+			EC2SSHKey:            aws.ToString(ng.RemoteAccess.Ec2SshKey),
+			SourceSecurityGroups: ng.RemoteAccess.SourceSecurityGroups,
+		}
+	}
+
+	if ng.LaunchTemplate != nil {
+		summary.LaunchTemplate = &EKSLaunchTemplate{
+			Name:    aws.ToString(ng.LaunchTemplate.Name),
+			ID:      aws.ToString(ng.LaunchTemplate.Id),
+			Version: aws.ToString(ng.LaunchTemplate.Version),
+		}
+	}
+
+	return summary, nil
+}
+
+// ListEKSFargateProfiles lists Fargate profiles for a cluster.
+func (f *ClientFactory) ListEKSFargateProfiles(ctx context.Context, creds SessionCredentials, clusterName string) ([]string, error) {
+	f.rateLimiter.Wait("eks")
+	f.logAPICall("eks", "ListFargateProfiles", map[string]string{"cluster": clusterName}, nil)
+
+	client := f.EKSClient(creds)
+	var names []string
+	var nextToken *string
+	for {
+		out, err := client.ListFargateProfiles(ctx, &eks.ListFargateProfilesInput{
+			ClusterName: &clusterName,
+			NextToken:   nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ListFargateProfiles(%s): %w", clusterName, err)
+		}
+		names = append(names, out.FargateProfileNames...)
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+		f.rateLimiter.Wait("eks")
+	}
+	return names, nil
+}
+
+// DescribeEKSFargateProfile returns detailed Fargate profile info.
+func (f *ClientFactory) DescribeEKSFargateProfile(ctx context.Context, creds SessionCredentials, clusterName, profileName string) (*EKSFargateProfileSummary, error) {
+	f.rateLimiter.Wait("eks")
+	f.logAPICall("eks", "DescribeFargateProfile", map[string]string{"cluster": clusterName, "profile": profileName}, nil)
+
+	client := f.EKSClient(creds)
+	out, err := client.DescribeFargateProfile(ctx, &eks.DescribeFargateProfileInput{
+		ClusterName:        &clusterName,
+		FargateProfileName: &profileName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeFargateProfile(%s/%s): %w", clusterName, profileName, err)
+	}
+
+	fp := out.FargateProfile
+	summary := &EKSFargateProfileSummary{
+		Name:                aws.ToString(fp.FargateProfileName),
+		ARN:                 aws.ToString(fp.FargateProfileArn),
+		ClusterName:         aws.ToString(fp.ClusterName),
+		Status:              string(fp.Status),
+		PodExecutionRoleARN: aws.ToString(fp.PodExecutionRoleArn),
+		SubnetIDs:           fp.Subnets,
+	}
+
+	for _, s := range fp.Selectors {
+		summary.Selectors = append(summary.Selectors, EKSFargateSelector{
+			Namespace: aws.ToString(s.Namespace),
+			Labels:    s.Labels,
+		})
+	}
+
+	return summary, nil
+}
+
+// ListEKSIdentityProviderConfigs lists identity provider configs for a cluster.
+func (f *ClientFactory) ListEKSIdentityProviderConfigs(ctx context.Context, creds SessionCredentials, clusterName string) ([]EKSIdentityProviderSummary, error) {
+	f.rateLimiter.Wait("eks")
+	f.logAPICall("eks", "ListIdentityProviderConfigs", map[string]string{"cluster": clusterName}, nil)
+
+	client := f.EKSClient(creds)
+	out, err := client.ListIdentityProviderConfigs(ctx, &eks.ListIdentityProviderConfigsInput{
+		ClusterName: &clusterName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ListIdentityProviderConfigs(%s): %w", clusterName, err)
+	}
+
+	var providers []EKSIdentityProviderSummary
+	for _, ipc := range out.IdentityProviderConfigs {
+		summary := EKSIdentityProviderSummary{
+			Name: aws.ToString(ipc.Name),
+			Type: aws.ToString(ipc.Type),
+		}
+
+		// Try to describe for details
+		descOut, err := client.DescribeIdentityProviderConfig(ctx, &eks.DescribeIdentityProviderConfigInput{
+			ClusterName:            &clusterName,
+			IdentityProviderConfig: &ipc,
+		})
+		if err == nil && descOut.IdentityProviderConfig != nil && descOut.IdentityProviderConfig.Oidc != nil {
+			oidc := descOut.IdentityProviderConfig.Oidc
+			summary.IssuerURL = aws.ToString(oidc.IssuerUrl)
+			summary.ClientID = aws.ToString(oidc.ClientId)
+			summary.Status = string(oidc.Status)
+		}
+
+		providers = append(providers, summary)
+	}
+
+	return providers, nil
+}

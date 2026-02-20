@@ -91,7 +91,7 @@ func (m *ConfigEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.R
 	creds := aws.SessionCredentials{Region: ctx.Session.Region}
 	bgCtx := context.Background()
 
-	var findings []map[string]any
+	findings := make([]map[string]any, 0)
 	steps := 3
 	if ctx.InputBool("check_compliance") {
 		steps = 4
@@ -106,7 +106,7 @@ func (m *ConfigEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.R
 		return sdk.ErrResult(fmt.Errorf("listing Config recorders: %w", err))
 	}
 
-	var recorderResults []map[string]any
+	recorderResults := make([]map[string]any, 0)
 	if len(recorders) == 0 {
 		findings = append(findings, map[string]any{
 			"resource": "config_recorders",
@@ -172,7 +172,7 @@ func (m *ConfigEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.R
 	prog.Update(2, "Checking delivery channels")
 
 	channels, err := m.factory.ListConfigDeliveryChannels(bgCtx, creds)
-	var channelResults []map[string]any
+	channelResults := make([]map[string]any, 0)
 	if err != nil {
 		findings = append(findings, map[string]any{
 			"resource": "delivery_channels",
@@ -230,7 +230,7 @@ func (m *ConfigEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.R
 	}
 
 	rules, err := m.factory.ListConfigRules(bgCtx, creds)
-	var ruleResults []map[string]any
+	ruleResults := make([]map[string]any, 0)
 	if err != nil {
 		findings = append(findings, map[string]any{
 			"resource": "config_rules",
@@ -283,7 +283,7 @@ func (m *ConfigEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.R
 	}
 
 	// --- Step 4: Compliance ---
-	var complianceResults []map[string]any
+	complianceResults := make([]map[string]any, 0)
 	if ctx.InputBool("check_compliance") {
 		prog.Update(4, "Checking rule compliance")
 

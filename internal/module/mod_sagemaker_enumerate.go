@@ -296,7 +296,12 @@ func (m *SageMakerEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sd
 		step++
 		prog.Update(step, "Listing models")
 		models, err := m.factory.ListSageMakerModels(bgCtx, creds)
-		if err == nil {
+		if err != nil {
+			findings = append(findings, map[string]any{
+				"resource": "models", "finding": "ListFailed", "severity": "info",
+				"detail": fmt.Sprintf("could not list models: %v", err),
+			})
+		} else {
 			for i, model := range models {
 				if i >= maxItems {
 					break
@@ -312,7 +317,12 @@ func (m *SageMakerEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sd
 		step++
 		prog.Update(step, "Listing endpoints")
 		endpoints, err := m.factory.ListSageMakerEndpoints(bgCtx, creds)
-		if err == nil {
+		if err != nil {
+			findings = append(findings, map[string]any{
+				"resource": "endpoints", "finding": "ListFailed", "severity": "info",
+				"detail": fmt.Sprintf("could not list endpoints: %v", err),
+			})
+		} else {
 			for i, ep := range endpoints {
 				if i >= maxItems {
 					break
@@ -329,7 +339,12 @@ func (m *SageMakerEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sd
 		step++
 		prog.Update(step, "Listing training jobs")
 		jobs, err := m.factory.ListSageMakerTrainingJobs(bgCtx, creds)
-		if err == nil {
+		if err != nil {
+			findings = append(findings, map[string]any{
+				"resource": "training_jobs", "finding": "ListFailed", "severity": "info",
+				"detail": fmt.Sprintf("could not list training jobs: %v", err),
+			})
+		} else {
 			for i, job := range jobs {
 				if i >= maxItems {
 					break
@@ -350,7 +365,10 @@ func (m *SageMakerEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sd
 		prog.Update(step, "Listing notebook lifecycle configs")
 		nbLCCs, err := m.factory.ListSageMakerNotebookLifecycleConfigs(bgCtx, creds)
 		if err == nil {
-			for _, lcc := range nbLCCs {
+			for i, lcc := range nbLCCs {
+				if i >= maxItems {
+					break
+				}
 				lifecycleResults = append(lifecycleResults, map[string]any{
 					"name":          lcc.Name,
 					"arn":           lcc.ARN,
@@ -364,7 +382,10 @@ func (m *SageMakerEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sd
 		prog.Update(step, "Listing studio lifecycle configs")
 		studioLCCs, err := m.factory.ListSageMakerStudioLifecycleConfigs(bgCtx, creds)
 		if err == nil {
-			for _, lcc := range studioLCCs {
+			for i, lcc := range studioLCCs {
+				if i >= maxItems {
+					break
+				}
 				lifecycleResults = append(lifecycleResults, map[string]any{
 					"name":          lcc.Name,
 					"arn":           lcc.ARN,

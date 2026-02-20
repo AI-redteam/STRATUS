@@ -32,7 +32,7 @@ STRATUS is an operator-focused framework for authorized AWS security testing and
 - **Multi-identity management** — Import and switch between IAM keys, STS sessions, IMDS-captured creds, assumed roles, web identity tokens, and credential processes
 - **LIFO session stack** — Push/pop session contexts like a debugger call stack, with health monitoring and automatic refresh
 - **Pivot graph** — SQLite-backed directed graph with BFS pathfinding; trust policy parsing auto-discovers `can_assume` edges between principals and roles
-- **25 built-in modules** — Recon (IAM, STS, S3, EC2, EBS, Lambda, KMS, CloudTrail, CloudWatch, RDS, DynamoDB, ECS, SNS, Secrets Manager, SSM), write (create access keys, modify security groups), and destructive (stop CloudTrail, backdoor role trust policies) operations
+- **35 built-in modules** — Recon and privesc analysis across 16 AWS services (IAM, STS, S3, EC2, EBS, Lambda, KMS, CloudTrail, CloudWatch, RDS, DynamoDB, ECS, EKS, SNS, Secrets Manager, SSM, MWAA, SageMaker, AWS Config, CodeBuild, Cognito), write (create access keys, modify security groups), and destructive (stop CloudTrail, backdoor role trust policies) operations
 - **Blast radius scope enforcement** — 4-layer enforcement (module runner, AWS adapter, CLI commands, pivot operations) for region, account, partition, and ARN boundaries
 - **Encrypted vault** — AES-256-GCM with Argon2id KDF protects all credential material at rest
 - **Append-only audit log** — SHA-256 hash chain records every API call, module run, and identity operation for tamper-evident evidence
@@ -235,7 +235,7 @@ cmd/stratus-gui/
 | `artifacts list/show/create/get/verify` | Content-addressed artifact storage |
 | `note add/list/show/update/delete` | Engagement note management |
 | `export --format json/markdown` | Evidence export |
-| `aws <service> <operation>` | Convenience AWS API wrappers (sts, iam, s3, ec2, lambda, cloudtrail, kms, logs, ssm, secretsmanager) |
+| `aws <service> <operation>` | Convenience AWS API wrappers (sts, iam, s3, ec2, eks, lambda, cloudtrail, kms, logs, ssm, secretsmanager, codebuild, cognito) |
 | `awsraw` | Direct AWS API access escape hatch |
 
 ## Built-in Modules
@@ -265,6 +265,16 @@ cmd/stratus-gui/
 | `com.stratus.dynamodb.enumerate-tables` | Enumerate DynamoDB Tables | DynamoDB | Lists tables with item counts, size, encryption status, and table class |
 | `com.stratus.ecs.enumerate-clusters` | Enumerate ECS Clusters | ECS | Lists clusters and running tasks, identifies task IAM roles for lateral movement |
 | `com.stratus.sns.enumerate-topics` | Enumerate SNS Topics | SNS | Lists topics with access policies, identifies overly permissive public/cross-account access |
+| `com.stratus.mwaa.enumerate` | Enumerate MWAA Environments | MWAA | Lists managed Airflow environments with execution roles, VPC configs, and DAG storage |
+| `com.stratus.sagemaker.enumerate` | Enumerate SageMaker Resources | SageMaker | Lists notebooks, training jobs, endpoints with IAM roles and network configs |
+| `com.stratus.sagemaker.privesc-check` | SageMaker Privilege Escalation Check | SageMaker | Identifies SageMaker privesc paths (notebook presigned URLs, training job role assumption, endpoint invocation) |
+| `com.stratus.config.enumerate` | Enumerate AWS Config | Config | Lists Config recorders, delivery channels, and compliance status |
+| `com.stratus.codebuild.enumerate` | Enumerate CodeBuild Projects | CodeBuild | Lists projects with service roles, env vars, source configs, webhooks, and recent builds. Flags plaintext secrets and weak webhook filters |
+| `com.stratus.codebuild.privesc-check` | CodeBuild Privilege Escalation Check | CodeBuild | Identifies 7 CodeBuild privesc techniques: buildspec override, role swapping, S3 backdoor, webhook exploitation |
+| `com.stratus.cognito.enumerate` | Enumerate Cognito Pools | Cognito | Enumerates User Pools (clients, groups, IdPs, MFA) and Identity Pools (role mappings, unauthenticated access, classic flow) |
+| `com.stratus.cognito.privesc-check` | Cognito Privilege Escalation Check | Cognito | Identifies 12 Cognito privesc techniques: unauthenticated credential theft, role swapping, user impersonation, MFA bypass |
+| `com.stratus.eks.enumerate` | Enumerate EKS Clusters | EKS | Lists clusters with API endpoint access, OIDC/IRSA providers, node groups, Fargate profiles, and logging config |
+| `com.stratus.eks.privesc-check` | EKS Privilege Escalation Check | EKS | Identifies 16 EKS privesc techniques across AWS and Kubernetes layers: aws-auth takeover, IRSA abuse, pod escape, IMDS theft |
 
 ### Offensive (write / destructive)
 
@@ -327,7 +337,7 @@ internal/
   scope/                  Blast radius enforcement (region, account, partition, ARN)
   audit/                  Append-only hash chain audit log
   artifact/               Content-addressed file store (SHA-256 hashing, integrity verification)
-  module/                 Module registry, runner, and 25 built-in modules
+  module/                 Module registry, runner, and 35 built-in modules
   pki/                    mTLS certificate authority and certificate generation
   logging/                Structured logging with secret redaction
   aws/                    AWS SDK v2 adapter (rate limiting, retry, caching, audit logging)

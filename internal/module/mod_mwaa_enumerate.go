@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/stratus-framework/stratus/internal/aws"
+	"github.com/stratus-framework/stratus/internal/core"
 	"github.com/stratus-framework/stratus/internal/graph"
 	sdk "github.com/stratus-framework/stratus/pkg/sdk/v1"
 )
@@ -102,8 +104,8 @@ func (m *MWAAEnumerateModule) Run(ctx sdk.RunContext, prog sdk.Progress) sdk.Run
 	checkPolicies := ctx.InputBool("check_role_policies")
 	prog.Total(len(envNames))
 
-	var environments []map[string]any
-	var findings []map[string]any
+	environments := make([]map[string]any, 0)
+	findings := make([]map[string]any, 0)
 
 	for i, name := range envNames {
 		prog.Update(i+1, "Inspecting: "+name)
@@ -182,13 +184,24 @@ func (m *MWAAEnumerateModule) analyzeExecutionRole(ctx context.Context, creds aw
 
 	detail, err := m.factory.GetIAMRoleDetail(ctx, creds, roleName)
 	if err != nil {
+		findings = append(findings, map[string]any{
+			"environment": envName,
+			"finding":     "RoleAnalysisFailed",
+			"severity":    "info",
+			"detail":      fmt.Sprintf("could not analyze execution role %s: %v", roleName, err),
+		})
 		return findings
 	}
 
-	// Add graph nodes if available
+	// Add graph nodes and edge if available
 	if m.graph != nil {
 		m.graph.AddNode("mwaa:"+envName, "mwaa_environment", envName, sessionUUID, nil)
 		m.graph.AddNode(detail.ARN, "iam_role", roleName, sessionUUID, nil)
+		m.graph.AddEdge(core.GraphEdge{
+			SourceNodeID: "mwaa:" + envName, TargetNodeID: detail.ARN,
+			EdgeType: core.EdgeCanAssume, DiscoveredBySessionUUID: sessionUUID,
+			DiscoveredAt: time.Now().UTC(), Confidence: 0.95,
+		})
 	}
 
 	// Collect all policy documents for the role

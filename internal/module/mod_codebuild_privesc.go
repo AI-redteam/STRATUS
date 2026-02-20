@@ -124,44 +124,56 @@ func (m *CodeBuildPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 
 		// Technique 1: StartBuild buildspec override — steal existing service role
 		privescPaths = append(privescPaths, map[string]any{
-			"technique":     "BuildspecOverride",
-			"severity":      "high",
-			"project":       p.Name,
-			"target_role":   p.ServiceRoleARN,
-			"description":   fmt.Sprintf("StartBuild on project %s with --buildspec-override executes arbitrary commands under service role. Credentials available at http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI.", p.Name),
-			"required_permissions": []string{"codebuild:StartBuild"},
+			"finding":          "BuildspecOverride",
+			"severity":         "high",
+			"principal_type":   "codebuild_project",
+			"principal_name":   p.Name,
+			"principal_arn":    p.ARN,
+			"target_role":     p.ServiceRoleARN,
+			"description":     fmt.Sprintf("StartBuild on project %s with --buildspec-override executes arbitrary commands under service role. Credentials available at http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI.", p.Name),
+			"required_actions": []string{"codebuild:StartBuild"},
+			"reference":        "T1059",
 		})
 
 		// Technique 2: UpdateProject buildspec — modify without changing role
 		privescPaths = append(privescPaths, map[string]any{
-			"technique":     "UpdateProjectBuildspec",
-			"severity":      "high",
-			"project":       p.Name,
-			"target_role":   p.ServiceRoleARN,
-			"description":   fmt.Sprintf("UpdateProject on %s can replace the buildspec and environment image to inject commands. No iam:PassRole needed since the existing role is reused.", p.Name),
-			"required_permissions": []string{"codebuild:UpdateProject", "codebuild:StartBuild"},
+			"finding":          "UpdateProjectBuildspec",
+			"severity":         "high",
+			"principal_type":   "codebuild_project",
+			"principal_name":   p.Name,
+			"principal_arn":    p.ARN,
+			"target_role":     p.ServiceRoleARN,
+			"description":     fmt.Sprintf("UpdateProject on %s can replace the buildspec and environment image to inject commands. No iam:PassRole needed since the existing role is reused.", p.Name),
+			"required_actions": []string{"codebuild:UpdateProject", "codebuild:StartBuild"},
+			"reference":        "T1059",
 		})
 
 		// Technique 3: UpdateProject with iam:PassRole — swap to any role
 		privescPaths = append(privescPaths, map[string]any{
-			"technique":     "UpdateProjectRoleSwap",
-			"severity":      "critical",
-			"project":       p.Name,
-			"target_role":   p.ServiceRoleARN,
-			"description":   fmt.Sprintf("UpdateProject on %s with iam:PassRole can change the service role to any CodeBuild-compatible role. Combined with StartBuild for arbitrary role credential theft.", p.Name),
-			"required_permissions": []string{"codebuild:UpdateProject", "iam:PassRole", "codebuild:StartBuild"},
+			"finding":          "UpdateProjectRoleSwap",
+			"severity":         "critical",
+			"principal_type":   "codebuild_project",
+			"principal_name":   p.Name,
+			"principal_arn":    p.ARN,
+			"target_role":     p.ServiceRoleARN,
+			"description":     fmt.Sprintf("UpdateProject on %s with iam:PassRole can change the service role to any CodeBuild-compatible role. Combined with StartBuild for arbitrary role credential theft.", p.Name),
+			"required_actions": []string{"codebuild:UpdateProject", "iam:PassRole", "codebuild:StartBuild"},
+			"reference":        "T1078.004",
 		})
 
 		// Technique 4: S3 buildspec backdoor
 		if p.SourceType == "S3" && p.SourceLocation != "" {
 			privescPaths = append(privescPaths, map[string]any{
-				"technique":     "S3BuildspecBackdoor",
-				"severity":      "high",
-				"project":       p.Name,
-				"target_role":   p.ServiceRoleARN,
-				"s3_location":   p.SourceLocation,
-				"description":   fmt.Sprintf("Project %s fetches buildspec from S3 (%s). With s3:PutObject on this bucket, the buildspec can be backdoored to steal credentials on next build.", p.Name, p.SourceLocation),
-				"required_permissions": []string{"s3:GetObject", "s3:PutObject", "codebuild:StartBuild"},
+				"finding":          "S3BuildspecBackdoor",
+				"severity":         "high",
+				"principal_type":   "codebuild_project",
+				"principal_name":   p.Name,
+				"principal_arn":    p.ARN,
+				"target_role":     p.ServiceRoleARN,
+				"s3_location":     p.SourceLocation,
+				"description":     fmt.Sprintf("Project %s fetches buildspec from S3 (%s). With s3:PutObject on this bucket, the buildspec can be backdoored to steal credentials on next build.", p.Name, p.SourceLocation),
+				"required_actions": []string{"s3:GetObject", "s3:PutObject", "codebuild:StartBuild"},
+				"reference":        "T1059",
 			})
 		}
 
@@ -184,12 +196,15 @@ func (m *CodeBuildPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 			}
 			if hasPREvent && !hasActorFilter {
 				privescPaths = append(privescPaths, map[string]any{
-					"technique":     "WebhookPRExploit",
-					"severity":      "critical",
-					"project":       p.Name,
-					"target_role":   p.ServiceRoleARN,
-					"description":   fmt.Sprintf("Project %s has a PR-triggered webhook without ACTOR_ACCOUNT_ID restriction. An external attacker can open a PR with malicious buildspec to execute arbitrary code under the service role (CodeBreach-style).", p.Name),
-					"required_permissions": []string{"(external: repository write access)"},
+					"finding":          "WebhookPRExploit",
+					"severity":         "critical",
+					"principal_type":   "codebuild_project",
+					"principal_name":   p.Name,
+					"principal_arn":    p.ARN,
+					"target_role":     p.ServiceRoleARN,
+					"description":     fmt.Sprintf("Project %s has a PR-triggered webhook without ACTOR_ACCOUNT_ID restriction. An external attacker can open a PR with malicious buildspec to execute arbitrary code under the service role (CodeBreach-style).", p.Name),
+					"required_actions": []string{"(external: repository write access)"},
+					"reference":        "T1059",
 				})
 			}
 		}
@@ -197,37 +212,44 @@ func (m *CodeBuildPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 		// Technique 6: Privileged Docker container escape
 		if p.Environment.PrivilegedMode {
 			privescPaths = append(privescPaths, map[string]any{
-				"technique":     "PrivilegedDockerEscape",
-				"severity":      "high",
-				"project":       p.Name,
-				"target_role":   p.ServiceRoleARN,
-				"description":   fmt.Sprintf("Project %s runs with privileged Docker mode. Build containers can mount the host filesystem and potentially access other containers' credentials or escape to the underlying EC2 instance.", p.Name),
-				"required_permissions": []string{"codebuild:StartBuild"},
+				"finding":          "PrivilegedDockerEscape",
+				"severity":         "high",
+				"principal_type":   "codebuild_project",
+				"principal_name":   p.Name,
+				"principal_arn":    p.ARN,
+				"target_role":     p.ServiceRoleARN,
+				"description":     fmt.Sprintf("Project %s runs with privileged Docker mode. Build containers can mount the host filesystem and potentially access other containers' credentials or escape to the underlying EC2 instance.", p.Name),
+				"required_actions": []string{"codebuild:StartBuild"},
+				"reference":        "T1059",
 			})
 		}
 	}
 
 	// Technique 7: CreateProject + iam:PassRole — arbitrary role execution
 	privescPaths = append(privescPaths, map[string]any{
-		"technique":   "CreateProjectWithRole",
-		"severity":    "critical",
-		"project":     "(new project)",
-		"description": "codebuild:CreateProject with iam:PassRole allows creating a new project with any CodeBuild-compatible IAM role. Combined with StartBuild for complete role credential theft.",
-		"required_permissions": []string{
+		"finding":          "CreateProjectWithRole",
+		"severity":         "critical",
+		"principal_type":   "codebuild_service",
+		"principal_name":   "CodeBuild",
+		"principal_arn":    "",
+		"target_role":     "",
+		"description":     "codebuild:CreateProject with iam:PassRole allows creating a new project with any CodeBuild-compatible IAM role. Combined with StartBuild for complete role credential theft.",
+		"required_actions": []string{
 			"codebuild:CreateProject",
 			"iam:PassRole",
 			"codebuild:StartBuild",
 		},
+		"reference": "T1078.004",
 	})
 
 	// --- Step 3: Summary ---
 	prog.Update(3, "Building summary")
 
-	techniqueCounts := make(map[string]int)
+	findingCounts := make(map[string]int)
 	severityCounts := make(map[string]int)
 	for _, p := range privescPaths {
-		if t, ok := p["technique"].(string); ok {
-			techniqueCounts[t]++
+		if t, ok := p["finding"].(string); ok {
+			findingCounts[t]++
 		}
 		if s, ok := p["severity"].(string); ok {
 			severityCounts[s]++
@@ -243,7 +265,7 @@ func (m *CodeBuildPrivescCheckModule) Run(ctx sdk.RunContext, prog sdk.Progress)
 				"total_paths":      len(privescPaths),
 				"total_projects":   len(projects),
 				"unique_roles":     len(roleSet),
-				"technique_counts": techniqueCounts,
+				"finding_counts":   findingCounts,
 				"severity_counts":  severityCounts,
 			},
 		},

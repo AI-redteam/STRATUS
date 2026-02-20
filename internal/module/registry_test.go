@@ -138,6 +138,10 @@ func TestBuiltinModulesRegister(t *testing.T) {
 		"com.stratus.dynamodb.enumerate-tables":      false,
 		"com.stratus.ecs.enumerate-clusters":         false,
 		"com.stratus.sns.enumerate-topics":           false,
+		"com.stratus.mwaa.enumerate":                 false,
+		"com.stratus.sagemaker.enumerate":            false,
+		"com.stratus.sagemaker.privesc-check":        false,
+		"com.stratus.config.enumerate":               false,
 	}
 
 	metas := reg.List()

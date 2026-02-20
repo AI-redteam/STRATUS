@@ -11,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	configtypes "github.com/aws/aws-sdk-go-v2/service/configservice/types"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -19,8 +21,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/mwaa"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
@@ -1614,4 +1618,739 @@ func (f *ClientFactory) AuthorizeSecurityGroupIngress(ctx context.Context, creds
 		ToPort:   toPort,
 		CidrIP:   cidrIP,
 	}, nil
+}
+
+// ---- MWAA operations ----
+
+// MWAAEnvironmentSummary holds MWAA environment metadata.
+type MWAAEnvironmentSummary struct {
+	Name             string `json:"name"`
+	ARN              string `json:"arn"`
+	Status           string `json:"status"`
+	ExecutionRoleARN string `json:"execution_role_arn"`
+	SourceBucketARN  string `json:"source_bucket_arn"`
+	DAGS3Path        string `json:"dag_s3_path"`
+	WebserverURL     string `json:"webserver_url"`
+	AirflowVersion   string `json:"airflow_version"`
+	EnvironmentClass string `json:"environment_class"`
+	WebserverAccess  string `json:"webserver_access_mode"`
+	KMSKey           string `json:"kms_key,omitempty"`
+	WeeklyMaint      string `json:"weekly_maintenance_window,omitempty"`
+	SecurityGroupIDs []string `json:"security_group_ids,omitempty"`
+	SubnetIDs        []string `json:"subnet_ids,omitempty"`
+}
+
+// ListMWAAEnvironments lists all MWAA environment names.
+func (f *ClientFactory) ListMWAAEnvironments(ctx context.Context, creds SessionCredentials) ([]string, error) {
+	cacheKey := "mwaa:envs:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]string), nil
+	}
+
+	f.rateLimiter.Wait("mwaa")
+	f.logAPICall("mwaa", "ListEnvironments", nil, nil)
+
+	client := f.MWAAClient(creds)
+	var names []string
+	paginator := mwaa.NewListEnvironmentsPaginator(client, &mwaa.ListEnvironmentsInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListEnvironments: %w", err)
+		}
+		names = append(names, page.Environments...)
+		f.rateLimiter.Wait("mwaa")
+	}
+	f.cache.Put(cacheKey, names)
+	return names, nil
+}
+
+// GetMWAAEnvironment returns detailed info for a single MWAA environment.
+func (f *ClientFactory) GetMWAAEnvironment(ctx context.Context, creds SessionCredentials, name string) (*MWAAEnvironmentSummary, error) {
+	cacheKey := "mwaa:env:" + creds.AccessKeyID + ":" + creds.Region + ":" + name
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.(*MWAAEnvironmentSummary), nil
+	}
+
+	f.rateLimiter.Wait("mwaa")
+	f.logAPICall("mwaa", "GetEnvironment", map[string]string{"name": name}, nil)
+
+	client := f.MWAAClient(creds)
+	out, err := client.GetEnvironment(ctx, &mwaa.GetEnvironmentInput{Name: &name})
+	if err != nil {
+		return nil, fmt.Errorf("GetEnvironment(%s): %w", name, err)
+	}
+
+	env := out.Environment
+	summary := &MWAAEnvironmentSummary{
+		Name:             aws.ToString(env.Name),
+		ARN:              aws.ToString(env.Arn),
+		Status:           string(env.Status),
+		ExecutionRoleARN: aws.ToString(env.ExecutionRoleArn),
+		SourceBucketARN:  aws.ToString(env.SourceBucketArn),
+		DAGS3Path:        aws.ToString(env.DagS3Path),
+		WebserverURL:     aws.ToString(env.WebserverUrl),
+		AirflowVersion:   aws.ToString(env.AirflowVersion),
+		EnvironmentClass: aws.ToString(env.EnvironmentClass),
+		WebserverAccess:  string(env.WebserverAccessMode),
+		KMSKey:           aws.ToString(env.KmsKey),
+		WeeklyMaint:      aws.ToString(env.WeeklyMaintenanceWindowStart),
+	}
+	if env.NetworkConfiguration != nil {
+		summary.SecurityGroupIDs = env.NetworkConfiguration.SecurityGroupIds
+		summary.SubnetIDs = env.NetworkConfiguration.SubnetIds
+	}
+	f.cache.Put(cacheKey, summary)
+	return summary, nil
+}
+
+// ---- SageMaker operations ----
+
+// SageMakerDomainSummary holds SageMaker Studio domain metadata.
+type SageMakerDomainSummary struct {
+	DomainID   string `json:"domain_id"`
+	DomainName string `json:"domain_name"`
+	DomainARN  string `json:"domain_arn"`
+	Status     string `json:"status"`
+	CreatedAt  string `json:"created_at"`
+}
+
+// SageMakerDomainDetail holds detailed domain info.
+type SageMakerDomainDetail struct {
+	DomainID             string   `json:"domain_id"`
+	DomainName           string   `json:"domain_name"`
+	DomainARN            string   `json:"domain_arn"`
+	Status               string   `json:"status"`
+	DefaultExecutionRole string   `json:"default_execution_role"`
+	AuthMode             string   `json:"auth_mode"`
+	VpcID                string   `json:"vpc_id"`
+	SubnetIDs            []string `json:"subnet_ids"`
+	SecurityGroupIDs     []string `json:"security_group_ids"`
+	HomeEFSFileSystemID  string   `json:"home_efs_filesystem_id"`
+	AppNetworkAccessType string   `json:"app_network_access_type"`
+}
+
+// SageMakerUserProfileSummary holds user profile metadata.
+type SageMakerUserProfileSummary struct {
+	UserProfileName string `json:"user_profile_name"`
+	DomainID        string `json:"domain_id"`
+	Status          string `json:"status"`
+}
+
+// SageMakerUserProfileDetail holds detailed user profile info.
+type SageMakerUserProfileDetail struct {
+	UserProfileName string `json:"user_profile_name"`
+	DomainID        string `json:"domain_id"`
+	UserProfileARN  string `json:"user_profile_arn"`
+	Status          string `json:"status"`
+	ExecutionRole   string `json:"execution_role,omitempty"`
+}
+
+// SageMakerNotebookSummary holds notebook instance metadata.
+type SageMakerNotebookSummary struct {
+	NotebookName       string `json:"notebook_name"`
+	NotebookARN        string `json:"notebook_arn"`
+	Status             string `json:"status"`
+	InstanceType       string `json:"instance_type"`
+	RoleARN            string `json:"role_arn"`
+	DirectInternetAccess string `json:"direct_internet_access"`
+	RootAccess         string `json:"root_access"`
+	DefaultCodeRepo    string `json:"default_code_repo,omitempty"`
+	LifecycleConfig    string `json:"lifecycle_config,omitempty"`
+	URL                string `json:"url,omitempty"`
+}
+
+// SageMakerModelSummary holds model metadata.
+type SageMakerModelSummary struct {
+	ModelName    string `json:"model_name"`
+	ModelARN     string `json:"model_arn"`
+	CreationTime string `json:"creation_time"`
+}
+
+// SageMakerEndpointSummary holds endpoint metadata.
+type SageMakerEndpointSummary struct {
+	EndpointName string `json:"endpoint_name"`
+	EndpointARN  string `json:"endpoint_arn"`
+	Status       string `json:"status"`
+	CreationTime string `json:"creation_time"`
+}
+
+// SageMakerTrainingJobSummary holds training job metadata.
+type SageMakerTrainingJobSummary struct {
+	TrainingJobName string `json:"training_job_name"`
+	TrainingJobARN  string `json:"training_job_arn"`
+	Status          string `json:"status"`
+	CreationTime    string `json:"creation_time"`
+}
+
+// SageMakerLifecycleConfigSummary holds notebook lifecycle config metadata.
+type SageMakerLifecycleConfigSummary struct {
+	Name         string `json:"name"`
+	ARN          string `json:"arn"`
+	CreationTime string `json:"creation_time"`
+}
+
+// ListSageMakerDomains lists SageMaker Studio domains.
+func (f *ClientFactory) ListSageMakerDomains(ctx context.Context, creds SessionCredentials) ([]SageMakerDomainSummary, error) {
+	cacheKey := "sagemaker:domains:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]SageMakerDomainSummary), nil
+	}
+
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "ListDomains", nil, nil)
+
+	client := f.SageMakerClient(creds)
+	var domains []SageMakerDomainSummary
+	paginator := sagemaker.NewListDomainsPaginator(client, &sagemaker.ListDomainsInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListDomains: %w", err)
+		}
+		for _, d := range page.Domains {
+			domains = append(domains, SageMakerDomainSummary{
+				DomainID:   aws.ToString(d.DomainId),
+				DomainName: aws.ToString(d.DomainName),
+				DomainARN:  aws.ToString(d.DomainArn),
+				Status:     string(d.Status),
+				CreatedAt:  safeTimePtr(d.CreationTime),
+			})
+		}
+		f.rateLimiter.Wait("sagemaker")
+	}
+	f.cache.Put(cacheKey, domains)
+	return domains, nil
+}
+
+// DescribeSageMakerDomain returns detailed domain info.
+func (f *ClientFactory) DescribeSageMakerDomain(ctx context.Context, creds SessionCredentials, domainID string) (*SageMakerDomainDetail, error) {
+	cacheKey := "sagemaker:domain:" + creds.AccessKeyID + ":" + creds.Region + ":" + domainID
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.(*SageMakerDomainDetail), nil
+	}
+
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "DescribeDomain", map[string]string{"domain_id": domainID}, nil)
+
+	client := f.SageMakerClient(creds)
+	out, err := client.DescribeDomain(ctx, &sagemaker.DescribeDomainInput{DomainId: &domainID})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeDomain(%s): %w", domainID, err)
+	}
+
+	detail := &SageMakerDomainDetail{
+		DomainID:             aws.ToString(out.DomainId),
+		DomainName:           aws.ToString(out.DomainName),
+		DomainARN:            aws.ToString(out.DomainArn),
+		Status:               string(out.Status),
+		AuthMode:             string(out.AuthMode),
+		VpcID:                aws.ToString(out.VpcId),
+		SubnetIDs:            out.SubnetIds,
+		HomeEFSFileSystemID:  aws.ToString(out.HomeEfsFileSystemId),
+		AppNetworkAccessType: string(out.AppNetworkAccessType),
+	}
+	if out.DefaultUserSettings != nil {
+		detail.DefaultExecutionRole = aws.ToString(out.DefaultUserSettings.ExecutionRole)
+		if out.DefaultUserSettings.SecurityGroups != nil {
+			detail.SecurityGroupIDs = out.DefaultUserSettings.SecurityGroups
+		}
+	}
+	f.cache.Put(cacheKey, detail)
+	return detail, nil
+}
+
+// ListSageMakerUserProfiles lists user profiles for a domain.
+func (f *ClientFactory) ListSageMakerUserProfiles(ctx context.Context, creds SessionCredentials, domainID string) ([]SageMakerUserProfileSummary, error) {
+	cacheKey := "sagemaker:profiles:" + creds.AccessKeyID + ":" + creds.Region + ":" + domainID
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]SageMakerUserProfileSummary), nil
+	}
+
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "ListUserProfiles", map[string]string{"domain_id": domainID}, nil)
+
+	client := f.SageMakerClient(creds)
+	input := &sagemaker.ListUserProfilesInput{}
+	if domainID != "" {
+		input.DomainIdEquals = &domainID
+	}
+
+	var profiles []SageMakerUserProfileSummary
+	paginator := sagemaker.NewListUserProfilesPaginator(client, input)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListUserProfiles: %w", err)
+		}
+		for _, p := range page.UserProfiles {
+			profiles = append(profiles, SageMakerUserProfileSummary{
+				UserProfileName: aws.ToString(p.UserProfileName),
+				DomainID:        aws.ToString(p.DomainId),
+				Status:          string(p.Status),
+			})
+		}
+		f.rateLimiter.Wait("sagemaker")
+	}
+	f.cache.Put(cacheKey, profiles)
+	return profiles, nil
+}
+
+// DescribeSageMakerUserProfile returns detailed user profile info.
+func (f *ClientFactory) DescribeSageMakerUserProfile(ctx context.Context, creds SessionCredentials, domainID, profileName string) (*SageMakerUserProfileDetail, error) {
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "DescribeUserProfile", map[string]string{"domain_id": domainID, "profile": profileName}, nil)
+
+	client := f.SageMakerClient(creds)
+	out, err := client.DescribeUserProfile(ctx, &sagemaker.DescribeUserProfileInput{
+		DomainId:        &domainID,
+		UserProfileName: &profileName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeUserProfile(%s, %s): %w", domainID, profileName, err)
+	}
+
+	detail := &SageMakerUserProfileDetail{
+		UserProfileName: aws.ToString(out.UserProfileName),
+		DomainID:        aws.ToString(out.DomainId),
+		UserProfileARN:  aws.ToString(out.UserProfileArn),
+		Status:          string(out.Status),
+	}
+	if out.UserSettings != nil && out.UserSettings.ExecutionRole != nil {
+		detail.ExecutionRole = aws.ToString(out.UserSettings.ExecutionRole)
+	}
+	return detail, nil
+}
+
+// ListSageMakerNotebookInstances lists SageMaker notebook instances.
+func (f *ClientFactory) ListSageMakerNotebookInstances(ctx context.Context, creds SessionCredentials) ([]SageMakerNotebookSummary, error) {
+	cacheKey := "sagemaker:notebooks:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]SageMakerNotebookSummary), nil
+	}
+
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "ListNotebookInstances", nil, nil)
+
+	client := f.SageMakerClient(creds)
+	var notebooks []SageMakerNotebookSummary
+	paginator := sagemaker.NewListNotebookInstancesPaginator(client, &sagemaker.ListNotebookInstancesInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListNotebookInstances: %w", err)
+		}
+		for _, nb := range page.NotebookInstances {
+			notebooks = append(notebooks, SageMakerNotebookSummary{
+				NotebookName: aws.ToString(nb.NotebookInstanceName),
+				NotebookARN:  aws.ToString(nb.NotebookInstanceArn),
+				Status:       string(nb.NotebookInstanceStatus),
+				InstanceType: string(nb.InstanceType),
+				URL:          aws.ToString(nb.Url),
+			})
+		}
+		f.rateLimiter.Wait("sagemaker")
+	}
+	f.cache.Put(cacheKey, notebooks)
+	return notebooks, nil
+}
+
+// DescribeSageMakerNotebookInstance returns detailed notebook instance info.
+func (f *ClientFactory) DescribeSageMakerNotebookInstance(ctx context.Context, creds SessionCredentials, name string) (*SageMakerNotebookSummary, error) {
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "DescribeNotebookInstance", map[string]string{"name": name}, nil)
+
+	client := f.SageMakerClient(creds)
+	out, err := client.DescribeNotebookInstance(ctx, &sagemaker.DescribeNotebookInstanceInput{
+		NotebookInstanceName: &name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeNotebookInstance(%s): %w", name, err)
+	}
+
+	return &SageMakerNotebookSummary{
+		NotebookName:         aws.ToString(out.NotebookInstanceName),
+		NotebookARN:          aws.ToString(out.NotebookInstanceArn),
+		Status:               string(out.NotebookInstanceStatus),
+		InstanceType:         string(out.InstanceType),
+		RoleARN:              aws.ToString(out.RoleArn),
+		DirectInternetAccess: string(out.DirectInternetAccess),
+		RootAccess:           string(out.RootAccess),
+		DefaultCodeRepo:      aws.ToString(out.DefaultCodeRepository),
+		LifecycleConfig:      aws.ToString(out.NotebookInstanceLifecycleConfigName),
+		URL:                  aws.ToString(out.Url),
+	}, nil
+}
+
+// ListSageMakerModels lists SageMaker models.
+func (f *ClientFactory) ListSageMakerModels(ctx context.Context, creds SessionCredentials) ([]SageMakerModelSummary, error) {
+	cacheKey := "sagemaker:models:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]SageMakerModelSummary), nil
+	}
+
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "ListModels", nil, nil)
+
+	client := f.SageMakerClient(creds)
+	var models []SageMakerModelSummary
+	paginator := sagemaker.NewListModelsPaginator(client, &sagemaker.ListModelsInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListModels: %w", err)
+		}
+		for _, m := range page.Models {
+			models = append(models, SageMakerModelSummary{
+				ModelName:    aws.ToString(m.ModelName),
+				ModelARN:     aws.ToString(m.ModelArn),
+				CreationTime: safeTimePtr(m.CreationTime),
+			})
+		}
+		f.rateLimiter.Wait("sagemaker")
+	}
+	f.cache.Put(cacheKey, models)
+	return models, nil
+}
+
+// ListSageMakerEndpoints lists SageMaker inference endpoints.
+func (f *ClientFactory) ListSageMakerEndpoints(ctx context.Context, creds SessionCredentials) ([]SageMakerEndpointSummary, error) {
+	cacheKey := "sagemaker:endpoints:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]SageMakerEndpointSummary), nil
+	}
+
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "ListEndpoints", nil, nil)
+
+	client := f.SageMakerClient(creds)
+	var endpoints []SageMakerEndpointSummary
+	paginator := sagemaker.NewListEndpointsPaginator(client, &sagemaker.ListEndpointsInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListEndpoints: %w", err)
+		}
+		for _, ep := range page.Endpoints {
+			endpoints = append(endpoints, SageMakerEndpointSummary{
+				EndpointName: aws.ToString(ep.EndpointName),
+				EndpointARN:  aws.ToString(ep.EndpointArn),
+				Status:       string(ep.EndpointStatus),
+				CreationTime: safeTimePtr(ep.CreationTime),
+			})
+		}
+		f.rateLimiter.Wait("sagemaker")
+	}
+	f.cache.Put(cacheKey, endpoints)
+	return endpoints, nil
+}
+
+// ListSageMakerTrainingJobs lists SageMaker training jobs.
+func (f *ClientFactory) ListSageMakerTrainingJobs(ctx context.Context, creds SessionCredentials) ([]SageMakerTrainingJobSummary, error) {
+	cacheKey := "sagemaker:training:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]SageMakerTrainingJobSummary), nil
+	}
+
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "ListTrainingJobs", nil, nil)
+
+	client := f.SageMakerClient(creds)
+	var jobs []SageMakerTrainingJobSummary
+	paginator := sagemaker.NewListTrainingJobsPaginator(client, &sagemaker.ListTrainingJobsInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListTrainingJobs: %w", err)
+		}
+		for _, j := range page.TrainingJobSummaries {
+			jobs = append(jobs, SageMakerTrainingJobSummary{
+				TrainingJobName: aws.ToString(j.TrainingJobName),
+				TrainingJobARN:  aws.ToString(j.TrainingJobArn),
+				Status:          string(j.TrainingJobStatus),
+				CreationTime:    safeTimePtr(j.CreationTime),
+			})
+		}
+		f.rateLimiter.Wait("sagemaker")
+	}
+	f.cache.Put(cacheKey, jobs)
+	return jobs, nil
+}
+
+// ListSageMakerNotebookLifecycleConfigs lists notebook instance lifecycle configs.
+func (f *ClientFactory) ListSageMakerNotebookLifecycleConfigs(ctx context.Context, creds SessionCredentials) ([]SageMakerLifecycleConfigSummary, error) {
+	cacheKey := "sagemaker:nb-lcc:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]SageMakerLifecycleConfigSummary), nil
+	}
+
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "ListNotebookInstanceLifecycleConfigs", nil, nil)
+
+	client := f.SageMakerClient(creds)
+	var configs []SageMakerLifecycleConfigSummary
+	paginator := sagemaker.NewListNotebookInstanceLifecycleConfigsPaginator(client, &sagemaker.ListNotebookInstanceLifecycleConfigsInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListNotebookInstanceLifecycleConfigs: %w", err)
+		}
+		for _, c := range page.NotebookInstanceLifecycleConfigs {
+			configs = append(configs, SageMakerLifecycleConfigSummary{
+				Name:         aws.ToString(c.NotebookInstanceLifecycleConfigName),
+				ARN:          aws.ToString(c.NotebookInstanceLifecycleConfigArn),
+				CreationTime: safeTimePtr(c.CreationTime),
+			})
+		}
+		f.rateLimiter.Wait("sagemaker")
+	}
+	f.cache.Put(cacheKey, configs)
+	return configs, nil
+}
+
+// ListSageMakerStudioLifecycleConfigs lists Studio lifecycle configs.
+func (f *ClientFactory) ListSageMakerStudioLifecycleConfigs(ctx context.Context, creds SessionCredentials) ([]SageMakerLifecycleConfigSummary, error) {
+	cacheKey := "sagemaker:studio-lcc:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]SageMakerLifecycleConfigSummary), nil
+	}
+
+	f.rateLimiter.Wait("sagemaker")
+	f.logAPICall("sagemaker", "ListStudioLifecycleConfigs", nil, nil)
+
+	client := f.SageMakerClient(creds)
+	var configs []SageMakerLifecycleConfigSummary
+	paginator := sagemaker.NewListStudioLifecycleConfigsPaginator(client, &sagemaker.ListStudioLifecycleConfigsInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ListStudioLifecycleConfigs: %w", err)
+		}
+		for _, c := range page.StudioLifecycleConfigs {
+			configs = append(configs, SageMakerLifecycleConfigSummary{
+				Name:         aws.ToString(c.StudioLifecycleConfigName),
+				ARN:          aws.ToString(c.StudioLifecycleConfigArn),
+				CreationTime: safeTimePtr(c.CreationTime),
+			})
+		}
+		f.rateLimiter.Wait("sagemaker")
+	}
+	f.cache.Put(cacheKey, configs)
+	return configs, nil
+}
+
+// ---- AWS Config operations ----
+
+// ConfigRecorderSummary holds Config recorder metadata.
+type ConfigRecorderSummary struct {
+	Name          string `json:"name"`
+	RoleARN       string `json:"role_arn"`
+	AllSupported  bool   `json:"all_supported"`
+	IncludeGlobal bool   `json:"include_global_resources"`
+	Recording     bool   `json:"recording"`
+	LastStatus    string `json:"last_status"`
+	LastStartTime string `json:"last_start_time,omitempty"`
+	LastStopTime  string `json:"last_stop_time,omitempty"`
+	LastErrorCode string `json:"last_error_code,omitempty"`
+	LastErrorMsg  string `json:"last_error_message,omitempty"`
+}
+
+// ConfigDeliveryChannelSummary holds Config delivery channel metadata.
+type ConfigDeliveryChannelSummary struct {
+	Name              string `json:"name"`
+	S3BucketName      string `json:"s3_bucket_name"`
+	S3KeyPrefix       string `json:"s3_key_prefix,omitempty"`
+	SNSTopicARN       string `json:"sns_topic_arn,omitempty"`
+	DeliveryFrequency string `json:"delivery_frequency,omitempty"`
+}
+
+// ConfigRuleSummary holds Config rule metadata.
+type ConfigRuleSummary struct {
+	RuleName       string `json:"rule_name"`
+	RuleARN        string `json:"rule_arn"`
+	RuleID         string `json:"rule_id"`
+	Source         string `json:"source"`
+	SourceID       string `json:"source_id"`
+	State          string `json:"state"`
+	InputParams    string `json:"input_parameters,omitempty"`
+	MaxFrequency   string `json:"max_execution_frequency,omitempty"`
+}
+
+// ConfigRuleComplianceSummary holds rule compliance results.
+type ConfigRuleComplianceSummary struct {
+	RuleName      string `json:"rule_name"`
+	Compliant     int    `json:"compliant"`
+	NonCompliant  int    `json:"non_compliant"`
+}
+
+// ListConfigRecorders lists AWS Config recorders with their status.
+func (f *ClientFactory) ListConfigRecorders(ctx context.Context, creds SessionCredentials) ([]ConfigRecorderSummary, error) {
+	cacheKey := "config:recorders:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]ConfigRecorderSummary), nil
+	}
+
+	f.rateLimiter.Wait("config")
+	f.logAPICall("config", "DescribeConfigurationRecorders", nil, nil)
+
+	client := f.ConfigServiceClient(creds)
+	recOut, err := client.DescribeConfigurationRecorders(ctx, &configservice.DescribeConfigurationRecordersInput{})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeConfigurationRecorders: %w", err)
+	}
+
+	// Get recorder statuses
+	f.rateLimiter.Wait("config")
+	f.logAPICall("config", "DescribeConfigurationRecorderStatus", nil, nil)
+	statusOut, err := client.DescribeConfigurationRecorderStatus(ctx, &configservice.DescribeConfigurationRecorderStatusInput{})
+	statusMap := make(map[string]configtypes.ConfigurationRecorderStatus)
+	if err == nil {
+		for _, s := range statusOut.ConfigurationRecordersStatus {
+			statusMap[aws.ToString(s.Name)] = s
+		}
+	}
+
+	var recorders []ConfigRecorderSummary
+	for _, rec := range recOut.ConfigurationRecorders {
+		name := aws.ToString(rec.Name)
+		summary := ConfigRecorderSummary{
+			Name:    name,
+			RoleARN: aws.ToString(rec.RoleARN),
+		}
+		if rec.RecordingGroup != nil {
+			summary.AllSupported = rec.RecordingGroup.AllSupported
+			summary.IncludeGlobal = rec.RecordingGroup.IncludeGlobalResourceTypes
+		}
+		if st, ok := statusMap[name]; ok {
+			summary.Recording = st.Recording
+			summary.LastStatus = string(st.LastStatus)
+			if st.LastStartTime != nil {
+				summary.LastStartTime = st.LastStartTime.Format("2006-01-02 15:04:05")
+			}
+			if st.LastStopTime != nil {
+				summary.LastStopTime = st.LastStopTime.Format("2006-01-02 15:04:05")
+			}
+			if st.LastErrorCode != nil {
+				summary.LastErrorCode = aws.ToString(st.LastErrorCode)
+			}
+			if st.LastErrorMessage != nil {
+				summary.LastErrorMsg = aws.ToString(st.LastErrorMessage)
+			}
+		}
+		recorders = append(recorders, summary)
+	}
+	f.cache.Put(cacheKey, recorders)
+	return recorders, nil
+}
+
+// ListConfigDeliveryChannels lists AWS Config delivery channels.
+func (f *ClientFactory) ListConfigDeliveryChannels(ctx context.Context, creds SessionCredentials) ([]ConfigDeliveryChannelSummary, error) {
+	cacheKey := "config:channels:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]ConfigDeliveryChannelSummary), nil
+	}
+
+	f.rateLimiter.Wait("config")
+	f.logAPICall("config", "DescribeDeliveryChannels", nil, nil)
+
+	client := f.ConfigServiceClient(creds)
+	out, err := client.DescribeDeliveryChannels(ctx, &configservice.DescribeDeliveryChannelsInput{})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeDeliveryChannels: %w", err)
+	}
+
+	var channels []ConfigDeliveryChannelSummary
+	for _, ch := range out.DeliveryChannels {
+		summary := ConfigDeliveryChannelSummary{
+			Name:         aws.ToString(ch.Name),
+			S3BucketName: aws.ToString(ch.S3BucketName),
+			S3KeyPrefix:  aws.ToString(ch.S3KeyPrefix),
+			SNSTopicARN:  aws.ToString(ch.SnsTopicARN),
+		}
+		if ch.ConfigSnapshotDeliveryProperties != nil {
+			summary.DeliveryFrequency = string(ch.ConfigSnapshotDeliveryProperties.DeliveryFrequency)
+		}
+		channels = append(channels, summary)
+	}
+	f.cache.Put(cacheKey, channels)
+	return channels, nil
+}
+
+// ListConfigRules lists AWS Config rules.
+func (f *ClientFactory) ListConfigRules(ctx context.Context, creds SessionCredentials) ([]ConfigRuleSummary, error) {
+	cacheKey := "config:rules:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]ConfigRuleSummary), nil
+	}
+
+	f.rateLimiter.Wait("config")
+	f.logAPICall("config", "DescribeConfigRules", nil, nil)
+
+	client := f.ConfigServiceClient(creds)
+	var rules []ConfigRuleSummary
+	paginator := configservice.NewDescribeConfigRulesPaginator(client, &configservice.DescribeConfigRulesInput{})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("DescribeConfigRules: %w", err)
+		}
+		for _, r := range page.ConfigRules {
+			summary := ConfigRuleSummary{
+				RuleName:    aws.ToString(r.ConfigRuleName),
+				RuleARN:     aws.ToString(r.ConfigRuleArn),
+				RuleID:      aws.ToString(r.ConfigRuleId),
+				InputParams: aws.ToString(r.InputParameters),
+				State:       string(r.ConfigRuleState),
+			}
+			if r.MaximumExecutionFrequency != "" {
+				summary.MaxFrequency = string(r.MaximumExecutionFrequency)
+			}
+			if r.Source != nil {
+				summary.Source = string(r.Source.Owner)
+				summary.SourceID = aws.ToString(r.Source.SourceIdentifier)
+			}
+			rules = append(rules, summary)
+		}
+		f.rateLimiter.Wait("config")
+	}
+	f.cache.Put(cacheKey, rules)
+	return rules, nil
+}
+
+// GetConfigRuleCompliance gets compliance counts for config rules.
+func (f *ClientFactory) GetConfigRuleCompliance(ctx context.Context, creds SessionCredentials) ([]ConfigRuleComplianceSummary, error) {
+	cacheKey := "config:compliance:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]ConfigRuleComplianceSummary), nil
+	}
+
+	f.rateLimiter.Wait("config")
+	f.logAPICall("config", "DescribeComplianceByConfigRule", nil, nil)
+
+	client := f.ConfigServiceClient(creds)
+	out, err := client.DescribeComplianceByConfigRule(ctx, &configservice.DescribeComplianceByConfigRuleInput{})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeComplianceByConfigRule: %w", err)
+	}
+
+	var results []ConfigRuleComplianceSummary
+	for _, c := range out.ComplianceByConfigRules {
+		summary := ConfigRuleComplianceSummary{
+			RuleName: aws.ToString(c.ConfigRuleName),
+		}
+		if c.Compliance != nil {
+			if c.Compliance.ComplianceContributorCount != nil {
+				summary.Compliant = int(c.Compliance.ComplianceContributorCount.CappedCount)
+			}
+			switch c.Compliance.ComplianceType {
+			case configtypes.ComplianceTypeNonCompliant:
+				summary.NonCompliant = 1
+			case configtypes.ComplianceTypeCompliant:
+				summary.Compliant = 1
+			}
+		}
+		results = append(results, summary)
+	}
+	f.cache.Put(cacheKey, results)
+	return results, nil
 }

@@ -12,6 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentity"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	"github.com/aws/aws-sdk-go-v2/service/configservice"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -209,6 +212,18 @@ func (f *ClientFactory) SageMakerClient(creds SessionCredentials) *sagemaker.Cli
 
 func (f *ClientFactory) ConfigServiceClient(creds SessionCredentials) *configservice.Client {
 	return configservice.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) CodeBuildClient(creds SessionCredentials) *codebuild.Client {
+	return codebuild.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) CognitoIdentityClient(creds SessionCredentials) *cognitoidentity.Client {
+	return cognitoidentity.NewFromConfig(f.awsConfig(creds))
+}
+
+func (f *ClientFactory) CognitoIDPClient(creds SessionCredentials) *cognitoidentityprovider.Client {
+	return cognitoidentityprovider.NewFromConfig(f.awsConfig(creds))
 }
 
 // EC2ClientForRegion creates an EC2 client overriding the session region.

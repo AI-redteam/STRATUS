@@ -11,6 +11,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentity"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	"github.com/aws/aws-sdk-go-v2/service/configservice"
 	configtypes "github.com/aws/aws-sdk-go-v2/service/configservice/types"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -2354,3 +2358,646 @@ func (f *ClientFactory) GetConfigRuleCompliance(ctx context.Context, creds Sessi
 	f.cache.Put(cacheKey, results)
 	return results, nil
 }
+
+// ---- CodeBuild operations ----
+
+// CodeBuildProjectSummary holds CodeBuild project metadata.
+type CodeBuildProjectSummary struct {
+	Name            string              `json:"name"`
+	ARN             string              `json:"arn"`
+	ServiceRoleARN  string              `json:"service_role_arn"`
+	SourceType      string              `json:"source_type"`
+	SourceLocation  string              `json:"source_location,omitempty"`
+	BuildspecFile   string              `json:"buildspec,omitempty"`
+	Environment     CodeBuildEnvSummary `json:"environment"`
+	EncryptionKey   string              `json:"encryption_key,omitempty"`
+	Webhook         *CodeBuildWebhook   `json:"webhook,omitempty"`
+	EnvVars         []CodeBuildEnvVar   `json:"environment_variables,omitempty"`
+	ConcurrentLimit int32               `json:"concurrent_build_limit"`
+	Created         string              `json:"created,omitempty"`
+	LastModified    string              `json:"last_modified,omitempty"`
+}
+
+// CodeBuildEnvSummary holds build environment info.
+type CodeBuildEnvSummary struct {
+	ComputeType          string `json:"compute_type"`
+	Image                string `json:"image"`
+	Type                 string `json:"type"`
+	PrivilegedMode       bool   `json:"privileged_mode"`
+	ImagePullCredentials string `json:"image_pull_credentials_type"`
+}
+
+// CodeBuildEnvVar holds an environment variable.
+type CodeBuildEnvVar struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+	Type  string `json:"type"` // PLAINTEXT, PARAMETER_STORE, SECRETS_MANAGER
+}
+
+// CodeBuildWebhook holds webhook configuration.
+type CodeBuildWebhook struct {
+	URL          string     `json:"url,omitempty"`
+	BuildType    string     `json:"build_type,omitempty"`
+	FilterGroups [][]string `json:"filter_groups,omitempty"`
+}
+
+// CodeBuildSourceCredSummary holds source credential info.
+type CodeBuildSourceCredSummary struct {
+	ARN        string `json:"arn"`
+	ServerType string `json:"server_type"`
+	AuthType   string `json:"auth_type"`
+}
+
+// ListCodeBuildProjects lists CodeBuild project names.
+func (f *ClientFactory) ListCodeBuildProjects(ctx context.Context, creds SessionCredentials) ([]string, error) {
+	cacheKey := "codebuild:projects:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]string), nil
+	}
+
+	f.rateLimiter.Wait("codebuild")
+	f.logAPICall("codebuild", "ListProjects", nil, nil)
+
+	client := f.CodeBuildClient(creds)
+	var names []string
+	var nextToken *string
+	for {
+		out, err := client.ListProjects(ctx, &codebuild.ListProjectsInput{
+			NextToken: nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ListProjects: %w", err)
+		}
+		names = append(names, out.Projects...)
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+		f.rateLimiter.Wait("codebuild")
+	}
+	f.cache.Put(cacheKey, names)
+	return names, nil
+}
+
+// BatchGetCodeBuildProjects returns detailed info for up to 100 projects.
+func (f *ClientFactory) BatchGetCodeBuildProjects(ctx context.Context, creds SessionCredentials, names []string) ([]CodeBuildProjectSummary, error) {
+	f.rateLimiter.Wait("codebuild")
+	f.logAPICall("codebuild", "BatchGetProjects", map[string]string{"count": fmt.Sprintf("%d", len(names))}, nil)
+
+	client := f.CodeBuildClient(creds)
+
+	var allProjects []CodeBuildProjectSummary
+	// API limit: 100 names per call
+	for i := 0; i < len(names); i += 100 {
+		end := i + 100
+		if end > len(names) {
+			end = len(names)
+		}
+		batch := names[i:end]
+
+		out, err := client.BatchGetProjects(ctx, &codebuild.BatchGetProjectsInput{
+			Names: batch,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("BatchGetProjects: %w", err)
+		}
+
+		for _, p := range out.Projects {
+			summary := CodeBuildProjectSummary{
+				Name:            aws.ToString(p.Name),
+				ARN:             aws.ToString(p.Arn),
+				ServiceRoleARN:  aws.ToString(p.ServiceRole),
+				EncryptionKey:   aws.ToString(p.EncryptionKey),
+				ConcurrentLimit: aws.ToInt32(p.ConcurrentBuildLimit),
+				Created:         safeTimePtr(p.Created),
+				LastModified:    safeTimePtr(p.LastModified),
+			}
+
+			if p.Source != nil {
+				summary.SourceType = string(p.Source.Type)
+				summary.SourceLocation = aws.ToString(p.Source.Location)
+				summary.BuildspecFile = aws.ToString(p.Source.Buildspec)
+			}
+
+			if p.Environment != nil {
+				summary.Environment = CodeBuildEnvSummary{
+					ComputeType:          string(p.Environment.ComputeType),
+					Image:                aws.ToString(p.Environment.Image),
+					Type:                 string(p.Environment.Type),
+					PrivilegedMode:       aws.ToBool(p.Environment.PrivilegedMode),
+					ImagePullCredentials: string(p.Environment.ImagePullCredentialsType),
+				}
+				for _, ev := range p.Environment.EnvironmentVariables {
+					summary.EnvVars = append(summary.EnvVars, CodeBuildEnvVar{
+						Name:  aws.ToString(ev.Name),
+						Value: aws.ToString(ev.Value),
+						Type:  string(ev.Type),
+					})
+				}
+			}
+
+			if p.Webhook != nil {
+				wh := &CodeBuildWebhook{
+					URL:       aws.ToString(p.Webhook.Url),
+					BuildType: string(p.Webhook.BuildType),
+				}
+				for _, fg := range p.Webhook.FilterGroups {
+					var filters []string
+					for _, f := range fg {
+						exclude := false
+						if f.ExcludeMatchedPattern != nil {
+							exclude = *f.ExcludeMatchedPattern
+						}
+						filters = append(filters, fmt.Sprintf("%s:%s:%s",
+							string(f.Type), aws.ToString(f.Pattern),
+							boolStr(exclude)))
+					}
+					wh.FilterGroups = append(wh.FilterGroups, filters)
+				}
+				summary.Webhook = wh
+			}
+
+			allProjects = append(allProjects, summary)
+		}
+		if end < len(names) {
+			f.rateLimiter.Wait("codebuild")
+		}
+	}
+	return allProjects, nil
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "exclude"
+	}
+	return "include"
+}
+
+// ListCodeBuildSourceCredentials lists configured source credentials.
+func (f *ClientFactory) ListCodeBuildSourceCredentials(ctx context.Context, creds SessionCredentials) ([]CodeBuildSourceCredSummary, error) {
+	cacheKey := "codebuild:sourcecreds:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]CodeBuildSourceCredSummary), nil
+	}
+
+	f.rateLimiter.Wait("codebuild")
+	f.logAPICall("codebuild", "ListSourceCredentials", nil, nil)
+
+	client := f.CodeBuildClient(creds)
+	out, err := client.ListSourceCredentials(ctx, &codebuild.ListSourceCredentialsInput{})
+	if err != nil {
+		return nil, fmt.Errorf("ListSourceCredentials: %w", err)
+	}
+
+	var creds2 []CodeBuildSourceCredSummary
+	for _, sc := range out.SourceCredentialsInfos {
+		creds2 = append(creds2, CodeBuildSourceCredSummary{
+			ARN:        aws.ToString(sc.Arn),
+			ServerType: string(sc.ServerType),
+			AuthType:   string(sc.AuthType),
+		})
+	}
+	f.cache.Put(cacheKey, creds2)
+	return creds2, nil
+}
+
+// ListCodeBuildBuilds lists recent build IDs for a project.
+func (f *ClientFactory) ListCodeBuildBuilds(ctx context.Context, creds SessionCredentials, projectName string) ([]string, error) {
+	f.rateLimiter.Wait("codebuild")
+	f.logAPICall("codebuild", "ListBuildsForProject", map[string]string{"project": projectName}, nil)
+
+	client := f.CodeBuildClient(creds)
+	out, err := client.ListBuildsForProject(ctx, &codebuild.ListBuildsForProjectInput{
+		ProjectName: &projectName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ListBuildsForProject(%s): %w", projectName, err)
+	}
+	return out.Ids, nil
+}
+
+// CodeBuildBuildSummary holds build metadata.
+type CodeBuildBuildSummary struct {
+	ID             string `json:"id"`
+	ARN            string `json:"arn"`
+	ProjectName    string `json:"project_name"`
+	BuildStatus    string `json:"build_status"`
+	SourceVersion  string `json:"source_version,omitempty"`
+	ServiceRoleARN string `json:"service_role_arn"`
+	StartTime      string `json:"start_time,omitempty"`
+	EndTime        string `json:"end_time,omitempty"`
+	Initiator      string `json:"initiator,omitempty"`
+}
+
+// BatchGetCodeBuildBuilds returns details for build IDs.
+func (f *ClientFactory) BatchGetCodeBuildBuilds(ctx context.Context, creds SessionCredentials, buildIDs []string) ([]CodeBuildBuildSummary, error) {
+	if len(buildIDs) == 0 {
+		return nil, nil
+	}
+
+	f.rateLimiter.Wait("codebuild")
+	f.logAPICall("codebuild", "BatchGetBuilds", map[string]string{"count": fmt.Sprintf("%d", len(buildIDs))}, nil)
+
+	client := f.CodeBuildClient(creds)
+
+	// Limit to 100 per call
+	limit := 100
+	if len(buildIDs) > limit {
+		buildIDs = buildIDs[:limit]
+	}
+
+	out, err := client.BatchGetBuilds(ctx, &codebuild.BatchGetBuildsInput{Ids: buildIDs})
+	if err != nil {
+		return nil, fmt.Errorf("BatchGetBuilds: %w", err)
+	}
+
+	var results []CodeBuildBuildSummary
+	for _, b := range out.Builds {
+		summary := CodeBuildBuildSummary{
+			ID:             aws.ToString(b.Id),
+			ARN:            aws.ToString(b.Arn),
+			ProjectName:    aws.ToString(b.ProjectName),
+			BuildStatus:    string(b.BuildStatus),
+			SourceVersion:  aws.ToString(b.SourceVersion),
+			ServiceRoleARN: aws.ToString(b.ServiceRole),
+			StartTime:      safeTimePtr(b.StartTime),
+			EndTime:        safeTimePtr(b.EndTime),
+			Initiator:      aws.ToString(b.Initiator),
+		}
+		results = append(results, summary)
+	}
+	return results, nil
+}
+
+// ---- Cognito operations ----
+
+// CognitoUserPoolSummary holds user pool metadata.
+type CognitoUserPoolSummary struct {
+	PoolID   string `json:"pool_id"`
+	PoolName string `json:"pool_name"`
+	Status   string `json:"status"`
+	Created  string `json:"created,omitempty"`
+}
+
+// CognitoUserPoolDetail holds detailed user pool info.
+type CognitoUserPoolDetail struct {
+	PoolID              string   `json:"pool_id"`
+	PoolName            string   `json:"pool_name"`
+	ARN                 string   `json:"arn"`
+	Status              string   `json:"status"`
+	MFAConfiguration    string   `json:"mfa_configuration"`
+	EstimatedUsers      int32    `json:"estimated_users"`
+	SelfSignUpEnabled   bool     `json:"self_signup_enabled"`
+	UsernameAttributes  []string `json:"username_attributes,omitempty"`
+	AutoVerifiedAttrs   []string `json:"auto_verified_attributes,omitempty"`
+	DeletionProtection  string   `json:"deletion_protection"`
+	Domain              string   `json:"domain,omitempty"`
+	CustomDomain        string   `json:"custom_domain,omitempty"`
+}
+
+// CognitoIdentityPoolSummary holds identity pool metadata.
+type CognitoIdentityPoolSummary struct {
+	PoolID   string `json:"pool_id"`
+	PoolName string `json:"pool_name"`
+}
+
+// CognitoIdentityPoolDetail holds detailed identity pool info.
+type CognitoIdentityPoolDetail struct {
+	PoolID                        string              `json:"pool_id"`
+	PoolName                      string              `json:"pool_name"`
+	AllowUnauthenticated          bool                `json:"allow_unauthenticated"`
+	AllowClassicFlow              bool                `json:"allow_classic_flow"`
+	CognitoIdentityProviders      []CognitoIdProvider `json:"cognito_identity_providers,omitempty"`
+	SupportedLoginProviders       map[string]string   `json:"supported_login_providers,omitempty"`
+	OpenIDConnectProviderARNs     []string            `json:"openid_connect_provider_arns,omitempty"`
+	SAMLProviderARNs              []string            `json:"saml_provider_arns,omitempty"`
+}
+
+// CognitoIdProvider holds a Cognito provider reference.
+type CognitoIdProvider struct {
+	ProviderName     string `json:"provider_name"`
+	ClientID         string `json:"client_id"`
+	ServerSideTokenCheck bool `json:"server_side_token_check"`
+}
+
+// CognitoIdentityPoolRoles holds role mappings for an identity pool.
+type CognitoIdentityPoolRoles struct {
+	PoolID             string            `json:"pool_id"`
+	AuthenticatedRole  string            `json:"authenticated_role,omitempty"`
+	UnauthenticatedRole string           `json:"unauthenticated_role,omitempty"`
+	RoleMappings       map[string]string `json:"role_mappings,omitempty"`
+}
+
+// CognitoUserPoolClientSummary holds user pool client info.
+type CognitoUserPoolClientSummary struct {
+	ClientID   string `json:"client_id"`
+	ClientName string `json:"client_name"`
+}
+
+// CognitoGroupSummary holds user pool group info.
+type CognitoGroupSummary struct {
+	GroupName   string `json:"group_name"`
+	Description string `json:"description,omitempty"`
+	RoleARN     string `json:"role_arn,omitempty"`
+	Precedence  int32  `json:"precedence"`
+}
+
+// CognitoIdPSummary holds identity provider info.
+type CognitoIdPSummary struct {
+	ProviderName string `json:"provider_name"`
+	ProviderType string `json:"provider_type"`
+	Created      string `json:"created,omitempty"`
+}
+
+// ListCognitoUserPools lists Cognito User Pools.
+func (f *ClientFactory) ListCognitoUserPools(ctx context.Context, creds SessionCredentials) ([]CognitoUserPoolSummary, error) {
+	cacheKey := "cognito:userpools:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]CognitoUserPoolSummary), nil
+	}
+
+	f.rateLimiter.Wait("cognito-idp")
+	f.logAPICall("cognito-idp", "ListUserPools", nil, nil)
+
+	client := f.CognitoIDPClient(creds)
+	var pools []CognitoUserPoolSummary
+	var nextToken *string
+	for {
+		out, err := client.ListUserPools(ctx, &cognitoidentityprovider.ListUserPoolsInput{
+			MaxResults: aws.Int32(60),
+			NextToken:  nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ListUserPools: %w", err)
+		}
+		for _, p := range out.UserPools {
+			pools = append(pools, CognitoUserPoolSummary{
+				PoolID:   aws.ToString(p.Id),
+				PoolName: aws.ToString(p.Name),
+				Status:   string(p.Status),
+				Created:  safeTimePtr(p.CreationDate),
+			})
+		}
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+		f.rateLimiter.Wait("cognito-idp")
+	}
+	f.cache.Put(cacheKey, pools)
+	return pools, nil
+}
+
+// DescribeCognitoUserPool returns detailed user pool info.
+func (f *ClientFactory) DescribeCognitoUserPool(ctx context.Context, creds SessionCredentials, poolID string) (*CognitoUserPoolDetail, error) {
+	cacheKey := "cognito:userpool:" + creds.AccessKeyID + ":" + creds.Region + ":" + poolID
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.(*CognitoUserPoolDetail), nil
+	}
+
+	f.rateLimiter.Wait("cognito-idp")
+	f.logAPICall("cognito-idp", "DescribeUserPool", map[string]string{"pool_id": poolID}, nil)
+
+	client := f.CognitoIDPClient(creds)
+	out, err := client.DescribeUserPool(ctx, &cognitoidentityprovider.DescribeUserPoolInput{
+		UserPoolId: &poolID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeUserPool(%s): %w", poolID, err)
+	}
+
+	pool := out.UserPool
+	detail := &CognitoUserPoolDetail{
+		PoolID:             aws.ToString(pool.Id),
+		PoolName:           aws.ToString(pool.Name),
+		ARN:                aws.ToString(pool.Arn),
+		Status:             string(pool.Status),
+		MFAConfiguration:   string(pool.MfaConfiguration),
+		EstimatedUsers:     pool.EstimatedNumberOfUsers,
+		DeletionProtection: string(pool.DeletionProtection),
+		Domain:             aws.ToString(pool.Domain),
+		CustomDomain:       aws.ToString(pool.CustomDomain),
+	}
+	if pool.Policies != nil && pool.Policies.SignInPolicy != nil {
+		for _, at := range pool.Policies.SignInPolicy.AllowedFirstAuthFactors {
+			detail.UsernameAttributes = append(detail.UsernameAttributes, string(at))
+		}
+	}
+	if pool.AutoVerifiedAttributes != nil {
+		for _, a := range pool.AutoVerifiedAttributes {
+			detail.AutoVerifiedAttrs = append(detail.AutoVerifiedAttrs, string(a))
+		}
+	}
+	if pool.AdminCreateUserConfig != nil {
+		detail.SelfSignUpEnabled = !pool.AdminCreateUserConfig.AllowAdminCreateUserOnly
+	}
+	f.cache.Put(cacheKey, detail)
+	return detail, nil
+}
+
+// ListCognitoUserPoolClients lists clients for a user pool.
+func (f *ClientFactory) ListCognitoUserPoolClients(ctx context.Context, creds SessionCredentials, poolID string) ([]CognitoUserPoolClientSummary, error) {
+	f.rateLimiter.Wait("cognito-idp")
+	f.logAPICall("cognito-idp", "ListUserPoolClients", map[string]string{"pool_id": poolID}, nil)
+
+	client := f.CognitoIDPClient(creds)
+	var clients []CognitoUserPoolClientSummary
+	var nextToken *string
+	for {
+		out, err := client.ListUserPoolClients(ctx, &cognitoidentityprovider.ListUserPoolClientsInput{
+			UserPoolId: &poolID,
+			MaxResults: aws.Int32(60),
+			NextToken:  nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ListUserPoolClients(%s): %w", poolID, err)
+		}
+		for _, c := range out.UserPoolClients {
+			clients = append(clients, CognitoUserPoolClientSummary{
+				ClientID:   aws.ToString(c.ClientId),
+				ClientName: aws.ToString(c.ClientName),
+			})
+		}
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+		f.rateLimiter.Wait("cognito-idp")
+	}
+	return clients, nil
+}
+
+// ListCognitoGroups lists groups in a user pool.
+func (f *ClientFactory) ListCognitoGroups(ctx context.Context, creds SessionCredentials, poolID string) ([]CognitoGroupSummary, error) {
+	f.rateLimiter.Wait("cognito-idp")
+	f.logAPICall("cognito-idp", "ListGroups", map[string]string{"pool_id": poolID}, nil)
+
+	client := f.CognitoIDPClient(creds)
+	var groups []CognitoGroupSummary
+	var nextToken *string
+	for {
+		out, err := client.ListGroups(ctx, &cognitoidentityprovider.ListGroupsInput{
+			UserPoolId: &poolID,
+			NextToken:  nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ListGroups(%s): %w", poolID, err)
+		}
+		for _, g := range out.Groups {
+			groups = append(groups, CognitoGroupSummary{
+				GroupName:   aws.ToString(g.GroupName),
+				Description: aws.ToString(g.Description),
+				RoleARN:     aws.ToString(g.RoleArn),
+				Precedence:  aws.ToInt32(g.Precedence),
+			})
+		}
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+		f.rateLimiter.Wait("cognito-idp")
+	}
+	return groups, nil
+}
+
+// ListCognitoIdentityProviders lists IdPs for a user pool.
+func (f *ClientFactory) ListCognitoIdentityProviders(ctx context.Context, creds SessionCredentials, poolID string) ([]CognitoIdPSummary, error) {
+	f.rateLimiter.Wait("cognito-idp")
+	f.logAPICall("cognito-idp", "ListIdentityProviders", map[string]string{"pool_id": poolID}, nil)
+
+	client := f.CognitoIDPClient(creds)
+	var providers []CognitoIdPSummary
+	var nextToken *string
+	for {
+		out, err := client.ListIdentityProviders(ctx, &cognitoidentityprovider.ListIdentityProvidersInput{
+			UserPoolId: &poolID,
+			MaxResults: aws.Int32(60),
+			NextToken:  nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ListIdentityProviders(%s): %w", poolID, err)
+		}
+		for _, p := range out.Providers {
+			providers = append(providers, CognitoIdPSummary{
+				ProviderName: aws.ToString(p.ProviderName),
+				ProviderType: string(p.ProviderType),
+				Created:      safeTimePtr(p.CreationDate),
+			})
+		}
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+		f.rateLimiter.Wait("cognito-idp")
+	}
+	return providers, nil
+}
+
+// ListCognitoIdentityPools lists Cognito Identity Pools.
+func (f *ClientFactory) ListCognitoIdentityPools(ctx context.Context, creds SessionCredentials) ([]CognitoIdentityPoolSummary, error) {
+	cacheKey := "cognito:identitypools:" + creds.AccessKeyID + ":" + creds.Region
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.([]CognitoIdentityPoolSummary), nil
+	}
+
+	f.rateLimiter.Wait("cognito-identity")
+	f.logAPICall("cognito-identity", "ListIdentityPools", nil, nil)
+
+	client := f.CognitoIdentityClient(creds)
+	var pools []CognitoIdentityPoolSummary
+	var nextToken *string
+	for {
+		out, err := client.ListIdentityPools(ctx, &cognitoidentity.ListIdentityPoolsInput{
+			MaxResults: aws.Int32(60),
+			NextToken:  nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ListIdentityPools: %w", err)
+		}
+		for _, p := range out.IdentityPools {
+			pools = append(pools, CognitoIdentityPoolSummary{
+				PoolID:   aws.ToString(p.IdentityPoolId),
+				PoolName: aws.ToString(p.IdentityPoolName),
+			})
+		}
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+		f.rateLimiter.Wait("cognito-identity")
+	}
+	f.cache.Put(cacheKey, pools)
+	return pools, nil
+}
+
+// DescribeCognitoIdentityPool returns detailed identity pool info.
+func (f *ClientFactory) DescribeCognitoIdentityPool(ctx context.Context, creds SessionCredentials, poolID string) (*CognitoIdentityPoolDetail, error) {
+	cacheKey := "cognito:identitypool:" + creds.AccessKeyID + ":" + creds.Region + ":" + poolID
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		return cached.(*CognitoIdentityPoolDetail), nil
+	}
+
+	f.rateLimiter.Wait("cognito-identity")
+	f.logAPICall("cognito-identity", "DescribeIdentityPool", map[string]string{"pool_id": poolID}, nil)
+
+	client := f.CognitoIdentityClient(creds)
+	out, err := client.DescribeIdentityPool(ctx, &cognitoidentity.DescribeIdentityPoolInput{
+		IdentityPoolId: &poolID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeIdentityPool(%s): %w", poolID, err)
+	}
+
+	detail := &CognitoIdentityPoolDetail{
+		PoolID:                   aws.ToString(out.IdentityPoolId),
+		PoolName:                 aws.ToString(out.IdentityPoolName),
+		AllowUnauthenticated:     out.AllowUnauthenticatedIdentities,
+		AllowClassicFlow:         aws.ToBool(out.AllowClassicFlow),
+		SupportedLoginProviders:  out.SupportedLoginProviders,
+		OpenIDConnectProviderARNs: out.OpenIdConnectProviderARNs,
+		SAMLProviderARNs:         out.SamlProviderARNs,
+	}
+
+	for _, cp := range out.CognitoIdentityProviders {
+		detail.CognitoIdentityProviders = append(detail.CognitoIdentityProviders, CognitoIdProvider{
+			ProviderName:         aws.ToString(cp.ProviderName),
+			ClientID:             aws.ToString(cp.ClientId),
+			ServerSideTokenCheck: aws.ToBool(cp.ServerSideTokenCheck),
+		})
+	}
+
+	f.cache.Put(cacheKey, detail)
+	return detail, nil
+}
+
+// GetCognitoIdentityPoolRoles returns role mappings for an identity pool.
+func (f *ClientFactory) GetCognitoIdentityPoolRoles(ctx context.Context, creds SessionCredentials, poolID string) (*CognitoIdentityPoolRoles, error) {
+	f.rateLimiter.Wait("cognito-identity")
+	f.logAPICall("cognito-identity", "GetIdentityPoolRoles", map[string]string{"pool_id": poolID}, nil)
+
+	client := f.CognitoIdentityClient(creds)
+	out, err := client.GetIdentityPoolRoles(ctx, &cognitoidentity.GetIdentityPoolRolesInput{
+		IdentityPoolId: &poolID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("GetIdentityPoolRoles(%s): %w", poolID, err)
+	}
+
+	roles := &CognitoIdentityPoolRoles{
+		PoolID:       poolID,
+		RoleMappings: make(map[string]string),
+	}
+	if v, ok := out.Roles["authenticated"]; ok {
+		roles.AuthenticatedRole = v
+	}
+	if v, ok := out.Roles["unauthenticated"]; ok {
+		roles.UnauthenticatedRole = v
+	}
+	for k, rm := range out.RoleMappings {
+		roles.RoleMappings[k] = string(rm.Type)
+	}
+	return roles, nil
+}
+
+// Ensure cbtypes is used (for webhook filter type references)
+var _ = cbtypes.WebhookFilterTypeEvent

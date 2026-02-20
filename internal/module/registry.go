@@ -590,4 +590,12 @@ func RegisterBuiltinModules(reg *Registry, factory *stratusaws.ClientFactory, gs
 
 	// AWS Config modules
 	reg.Register(&ConfigEnumerateModule{factory: factory})
+
+	// CodeBuild modules
+	reg.Register(&CodeBuildEnumerateModule{factory: factory})
+	reg.Register(&CodeBuildPrivescCheckModule{factory: factory})
+
+	// Cognito modules
+	reg.Register(&CognitoEnumerateModule{factory: factory})
+	reg.Register(&CognitoPrivescCheckModule{factory: factory})
 }

@@ -333,6 +333,36 @@ export interface AWSExplorerResult {
   raw_json: string;
 }
 
+// Attack Path Analysis types
+export interface AttackStep {
+  step_number: number;
+  action: string;
+  from: string;
+  to: string;
+  description: string;
+  required_actions: string[];
+  confidence: number;
+  severity: string;
+}
+
+export interface AttackChain {
+  rank: number;
+  target: string;
+  chain_score: number;
+  steps: AttackStep[];
+  total_hops: number;
+  min_confidence: number;
+  services_involved: string[];
+}
+
+export interface AttackPathAnalysis {
+  attack_chains: AttackChain[];
+  chain_count: number;
+  high_value_targets: string[];
+  reachable_roles: string[];
+  summary: Record<string, any>;
+}
+
 export interface GraphSnapshot {
   workspace_uuid: string;
   timestamp: string;

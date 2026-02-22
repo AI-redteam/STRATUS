@@ -484,3 +484,19 @@ func (a *App) DeleteNote(uuidOrPrefix string) error {
 	}
 	return a.service.DeleteNote(uuidOrPrefix)
 }
+
+// --- Attack Path Analysis ---
+
+func (a *App) AnalyzeAttackPaths(targetPattern string, maxDepth int, minSeverity string) (map[string]any, error) {
+	if err := a.requireWorkspace(); err != nil {
+		return nil, err
+	}
+	result, err := a.service.AnalyzeAttackPaths(a.ctx, targetPattern, maxDepth, minSeverity)
+	if err != nil {
+		return nil, err
+	}
+	if result.Error != "" {
+		return nil, fmt.Errorf("%s", result.Error)
+	}
+	return result.Outputs, nil
+}

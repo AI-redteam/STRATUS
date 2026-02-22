@@ -14,6 +14,7 @@ import type {
   ImportIMDSRequest, ImportCredProcessRequest, ImportAssumeRoleRequest,
   ImportWebIdentityRequest, ImportIdentityOnlyResult,
   AWSExplorerRequest, AWSExplorerResult,
+  AttackPathAnalysis,
 } from '../types/api';
 
 // At runtime, Wails injects window.go.main.App
@@ -109,6 +110,10 @@ export const verifyArtifacts = () => call<VerifyArtifactsResult>('VerifyArtifact
 
 // --- Export ---
 export const exportWorkspace = (req: ExportRequest) => call<ExportResult>('ExportWorkspace', req);
+
+// --- Attack Path Analysis ---
+export const analyzeAttackPaths = (targetPattern: string, maxDepth: number, minSeverity: string) =>
+  call<AttackPathAnalysis>('AnalyzeAttackPaths', targetPattern, maxDepth, minSeverity);
 
 // --- AWS Explorer ---
 export const awsExplore = (req: AWSExplorerRequest) => call<AWSExplorerResult>('AWSExplore', req);

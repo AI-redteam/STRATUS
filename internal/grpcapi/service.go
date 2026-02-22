@@ -783,6 +783,56 @@ func (s *Service) RunModule(ctx context.Context, req RunModuleRequest) (*RunModu
 	return result, nil
 }
 
+// AnalyzeAttackPaths runs the attack path analyzer module without scope enforcement.
+// This module reads only from local SQLite (graph + module_runs) and makes zero AWS
+// API calls, so account/region scope restrictions should not apply.
+func (s *Service) AnalyzeAttackPaths(ctx context.Context, targetPattern string, maxDepth int, minSeverity string) (*RunModuleResult, error) {
+	creds, sess, err := stratusaws.ResolveActiveCredentials(s.engine)
+	if err != nil {
+		return nil, fmt.Errorf("resolving active credentials: %w", err)
+	}
+
+	factory := stratusaws.NewClientFactoryWithAudit(s.logger, s.engine.AuditLogger, sess.UUID)
+	gs := graph.NewStore(s.engine.MetadataDB, s.engine.Workspace.UUID)
+	reg := module.NewRegistry(s.engine.MetadataDB, s.logger)
+	module.RegisterBuiltinModules(reg, factory, gs)
+
+	runner := module.NewRunner(reg, s.engine.MetadataDB, s.engine.AuditLogger, factory, gs, s.logger, s.engine.Workspace.UUID)
+	// Intentionally no SetScope — this module is local-only analysis.
+	runner.SetArtifactStore(artifact.NewStore(s.engine.MetadataDB, s.engine.Workspace.Path, s.engine.Workspace.UUID))
+
+	cfg := module.RunConfig{
+		ModuleID: "com.stratus.attackpath.analyze",
+		Inputs: map[string]any{
+			"target_pattern": targetPattern,
+			"max_depth":      maxDepth,
+			"min_severity":   minSeverity,
+		},
+		Session:  sess,
+		Creds:    creds,
+		Operator: "gui",
+	}
+
+	run, err := runner.Execute(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &RunModuleResult{
+		RunUUID:     run.UUID,
+		Status:      string(run.Status),
+		Outputs:     run.Outputs,
+		ArtifactIDs: run.ArtifactUUIDs,
+	}
+	if run.CompletedAt != nil {
+		result.Duration = run.CompletedAt.Sub(run.StartedAt).String()
+	}
+	if run.ErrorDetail != nil {
+		result.Error = *run.ErrorDetail
+	}
+	return result, nil
+}
+
 // RunInfo is a transport-safe module run representation.
 type RunInfo struct {
 	UUID          string `json:"uuid"`

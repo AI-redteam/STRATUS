@@ -104,6 +104,9 @@ func NewHandler(svc *Service) *Handler {
 		// AWS Explorer
 		"aws.explore": h.handleAWSExplore,
 
+		// Attack Path Analysis
+		"attackpath.analyze": h.handleAnalyzeAttackPaths,
+
 		// Notes
 		"note.list":   h.handleListNotes,
 		"note.get":    h.handleGetNote,
@@ -536,4 +539,28 @@ func (h *Handler) handleImportWebIdentity(_ context.Context, params json.RawMess
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	return h.service.ImportWebIdentity(req)
+}
+
+type attackPathParams struct {
+	TargetPattern string `json:"target_pattern"`
+	MaxDepth      int    `json:"max_depth"`
+	MinSeverity   string `json:"min_severity"`
+}
+
+func (h *Handler) handleAnalyzeAttackPaths(ctx context.Context, params json.RawMessage) (any, error) {
+	var p attackPathParams
+	if params != nil {
+		json.Unmarshal(params, &p)
+	}
+	if p.MaxDepth == 0 {
+		p.MaxDepth = 5
+	}
+	if p.MinSeverity == "" {
+		p.MinSeverity = "medium"
+	}
+	result, err := h.service.AnalyzeAttackPaths(ctx, p.TargetPattern, p.MaxDepth, p.MinSeverity)
+	if err != nil {
+		return nil, err
+	}
+	return result.Outputs, nil
 }

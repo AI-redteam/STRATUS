@@ -148,6 +148,7 @@ func TestBuiltinModulesRegister(t *testing.T) {
 		"com.stratus.cognito.privesc-check":          false,
 		"com.stratus.eks.enumerate":                  false,
 		"com.stratus.eks.privesc-check":              false,
+		"com.stratus.attackpath.analyze":             false,
 	}
 
 	metas := reg.List()

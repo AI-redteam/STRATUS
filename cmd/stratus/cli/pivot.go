@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -9,9 +10,11 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/stratus-framework/stratus/internal/artifact"
 	awsops "github.com/stratus-framework/stratus/internal/aws"
 	"github.com/stratus-framework/stratus/internal/graph"
 	"github.com/stratus-framework/stratus/internal/identity"
+	"github.com/stratus-framework/stratus/internal/module"
 	"github.com/stratus-framework/stratus/internal/scope"
 	"github.com/stratus-framework/stratus/internal/session"
 )
@@ -37,6 +40,7 @@ func RegisterPivotCommands(root *cobra.Command) {
 	pivotCmd.AddCommand(newPivotHopsCmd())
 	pivotCmd.AddCommand(newPivotPathCmd())
 	pivotCmd.AddCommand(newPivotCanICmd())
+	pivotCmd.AddCommand(newPivotAttackPathsCmd())
 
 	root.AddCommand(pivotCmd)
 }
@@ -528,4 +532,304 @@ func newPivotCanICmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newPivotAttackPathsCmd() *cobra.Command {
+	var (
+		target   string
+		depth    int
+		severity string
+		asJSON   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "attack-paths",
+		Short: "Analyze attack paths from current identity to high-value targets",
+		Long: `Correlates pivot graph edges with privilege escalation findings from prior
+module runs to identify ranked attack chains. Computes reachable roles via BFS,
+maps privesc findings to exploitation steps, and scores chains by confidence,
+severity, and hop count. Makes zero AWS API calls.
+
+Prerequisites:
+  1. Run 'stratus pivot graph build' to populate the pivot graph
+  2. Run privesc modules (iam.policy-analyzer, codebuild.privesc-check, etc.)
+
+Examples:
+  stratus pivot attack-paths
+  stratus pivot attack-paths --target "*AdminRole*"
+  stratus pivot attack-paths --severity critical --depth 3
+  stratus pivot attack-paths --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			engine, err := loadActiveEngine()
+			if err != nil {
+				return err
+			}
+			defer engine.Close()
+
+			creds, sess, err := awsops.ResolveActiveCredentials(engine)
+			if err != nil {
+				return err
+			}
+
+			factory := awsops.NewClientFactoryWithAudit(engine.Logger, engine.AuditLogger, sess.UUID)
+			gs := graph.NewStore(engine.MetadataDB, engine.Workspace.UUID)
+			reg := module.NewRegistry(engine.MetadataDB, engine.Logger)
+			module.RegisterBuiltinModules(reg, factory, gs)
+
+			// No scope enforcement — this module is local-only analysis (zero AWS API calls).
+			runner := module.NewRunner(reg, engine.MetadataDB, engine.AuditLogger, factory, gs, engine.Logger, engine.Workspace.UUID)
+			runner.SetArtifactStore(artifact.NewStore(engine.MetadataDB, engine.Workspace.Path, engine.Workspace.UUID))
+
+			inputs := map[string]any{
+				"target_pattern": target,
+				"max_depth":      depth,
+				"min_severity":   severity,
+			}
+
+			cfg := module.RunConfig{
+				ModuleID: "com.stratus.attackpath.analyze",
+				Inputs:   inputs,
+				Session:  sess,
+				Creds:    creds,
+				Operator: "cli",
+			}
+
+			fmt.Println("Analyzing attack paths...")
+			fmt.Printf("  Session:  %s (%s)\n", sess.SessionName, sess.UUID[:8])
+			fmt.Printf("  Region:   %s\n", sess.Region)
+			if target != "" {
+				fmt.Printf("  Target:   %s\n", target)
+			}
+			fmt.Printf("  Depth:    %d\n", depth)
+			fmt.Printf("  Severity: %s+\n", severity)
+			fmt.Println()
+
+			run, err := runner.Execute(context.Background(), cfg)
+			if err != nil {
+				return err
+			}
+
+			if run.ErrorDetail != nil {
+				return fmt.Errorf("analysis failed: %s", *run.ErrorDetail)
+			}
+
+			if asJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(run.Outputs)
+			}
+
+			return renderAttackPaths(run.Outputs)
+		},
+	}
+
+	cmd.Flags().StringVar(&target, "target", "", "ARN glob to filter targets")
+	cmd.Flags().IntVar(&depth, "depth", 5, "Maximum chain hops")
+	cmd.Flags().StringVar(&severity, "severity", "medium", "Minimum severity (low, medium, high, critical)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output raw JSON")
+
+	return cmd
+}
+
+func renderAttackPaths(outputs map[string]any) error {
+	chainCount := 0
+	if v, ok := outputs["chain_count"]; ok {
+		switch n := v.(type) {
+		case int:
+			chainCount = n
+		case float64:
+			chainCount = int(n)
+		}
+	}
+
+	// Reachable roles
+	if roles, ok := outputs["reachable_roles"].([]string); ok && len(roles) > 0 {
+		fmt.Printf("Reachable Roles: %d\n", len(roles))
+		for _, r := range roles {
+			if len(roles) <= 10 {
+				fmt.Printf("  - %s\n", r)
+			}
+		}
+		if len(roles) > 10 {
+			fmt.Printf("  (showing first 10 of %d)\n", len(roles))
+			for _, r := range roles[:10] {
+				fmt.Printf("  - %s\n", r)
+			}
+		}
+		fmt.Println()
+	}
+
+	// High-value targets
+	if targets, ok := outputs["high_value_targets"].([]string); ok && len(targets) > 0 {
+		fmt.Printf("High-Value Targets (Admin): %d\n", len(targets))
+		for _, t := range targets {
+			fmt.Printf("  * %s\n", t)
+		}
+		fmt.Println()
+	}
+
+	if chainCount == 0 {
+		fmt.Println("No attack chains found.")
+		fmt.Println("\nTips:")
+		fmt.Println("  - Run 'stratus pivot graph build' to populate the pivot graph")
+		fmt.Println("  - Run privesc modules to discover escalation paths:")
+		fmt.Println("    stratus modules run com.stratus.iam.policy-analyzer")
+		fmt.Println("    stratus modules run com.stratus.codebuild.privesc-check")
+		return nil
+	}
+
+	fmt.Printf("Attack Chains Found: %d\n\n", chainCount)
+
+	chains, ok := outputs["attack_chains"].([]map[string]any)
+	if !ok {
+		// Handle the case where the type assertion fails (e.g., from JSON unmarshalling)
+		if raw, ok2 := outputs["attack_chains"]; ok2 {
+			data, _ := json.Marshal(raw)
+			json.Unmarshal(data, &chains)
+		}
+	}
+
+	for _, chain := range chains {
+		rank := toInt(chain["rank"])
+		target := toString(chain["target"])
+		score := toFloat(chain["chain_score"])
+		hops := toInt(chain["total_hops"])
+
+		// Determine max severity in chain
+		maxSev := "info"
+		steps := toMapSlice(chain["steps"])
+		for _, s := range steps {
+			sev := toString(s["severity"])
+			if severityRankCLI(sev) > severityRankCLI(maxSev) {
+				maxSev = sev
+			}
+		}
+
+		sevLabel := strings.ToUpper(maxSev)
+		fmt.Printf("[%d] %s | Score: %.2f | %d hop%s -> %s\n",
+			rank, sevLabel, score, hops, pluralS(hops), target)
+
+		for _, step := range steps {
+			stepNum := toInt(step["step_number"])
+			action := toString(step["action"])
+			desc := toString(step["description"])
+			to := toString(step["to"])
+
+			switch action {
+			case "can_assume", "trust":
+				fmt.Printf("    Step %d: %s %s (confidence: %.2f)\n",
+					stepNum, action, to, toFloat(step["confidence"]))
+			case "exploit_privesc":
+				fmt.Printf("    Step %d: exploit %s\n", stepNum, to)
+				fmt.Printf("            %s\n", desc)
+				if actions, ok := step["required_actions"]; ok {
+					actionStrs := toStringSlice(actions)
+					if len(actionStrs) > 0 {
+						fmt.Printf("            Required: %s\n", strings.Join(actionStrs, ", "))
+					}
+				}
+			default:
+				fmt.Printf("    Step %d: %s -> %s\n", stepNum, action, to)
+			}
+		}
+		fmt.Println()
+	}
+
+	// Summary
+	if summary, ok := outputs["summary"].(map[string]any); ok {
+		fmt.Printf("Summary:\n")
+		if bySev, ok := summary["chains_by_severity"].(map[string]any); ok {
+			var parts []string
+			for sev, count := range bySev {
+				parts = append(parts, fmt.Sprintf("%s=%v", sev, count))
+			}
+			if len(parts) > 0 {
+				fmt.Printf("  Chains by severity: %s\n", strings.Join(parts, ", "))
+			}
+		}
+		if avg, ok := summary["avg_chain_length"]; ok {
+			fmt.Printf("  Avg chain length:   %.1f\n", toFloat(avg))
+		}
+	}
+
+	return nil
+}
+
+func severityRankCLI(s string) int {
+	switch s {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func toInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	}
+	return 0
+}
+
+func toFloat(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	}
+	return 0
+}
+
+func toString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func toStringSlice(v any) []string {
+	switch s := v.(type) {
+	case []string:
+		return s
+	case []any:
+		var result []string
+		for _, item := range s {
+			result = append(result, fmt.Sprintf("%v", item))
+		}
+		return result
+	}
+	return nil
+}
+
+func toMapSlice(v any) []map[string]any {
+	switch s := v.(type) {
+	case []map[string]any:
+		return s
+	case []any:
+		var result []map[string]any
+		for _, item := range s {
+			if m, ok := item.(map[string]any); ok {
+				result = append(result, m)
+			}
+		}
+		return result
+	}
+	return nil
 }

@@ -602,4 +602,7 @@ func RegisterBuiltinModules(reg *Registry, factory *stratusaws.ClientFactory, gs
 	// EKS modules
 	reg.Register(&EKSEnumerateModule{factory: factory, graph: gs})
 	reg.Register(&EKSPrivescCheckModule{factory: factory})
+
+	// Analysis modules
+	reg.Register(&AttackPathAnalyzerModule{db: reg.db, graph: gs})
 }

@@ -550,7 +550,9 @@ type attackPathParams struct {
 func (h *Handler) handleAnalyzeAttackPaths(ctx context.Context, params json.RawMessage) (any, error) {
 	var p attackPathParams
 	if params != nil {
-		json.Unmarshal(params, &p)
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid attack path params: %w", err)
+		}
 	}
 	if p.MaxDepth == 0 {
 		p.MaxDepth = 5

@@ -76,8 +76,7 @@ export function AttackPaths() {
     setSelectedChain(null);
     try {
       const result = await api.analyzeAttackPaths(targetPattern, maxDepth, minSeverity);
-      // The Go method returns map[string]any, but Wails marshals it as the TS type
-      setAnalysis(result as any as AttackPathAnalysis);
+      setAnalysis(result);
     } catch (e: any) {
       setError(typeof e === 'string' ? e : (e?.message || 'Analysis failed'));
     }

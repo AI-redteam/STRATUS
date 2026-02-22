@@ -643,14 +643,14 @@ func renderAttackPaths(outputs map[string]any) error {
 	}
 
 	// Reachable roles
-	if roles, ok := outputs["reachable_roles"].([]string); ok && len(roles) > 0 {
+	roles := toStringSlice(outputs["reachable_roles"])
+	if len(roles) > 0 {
 		fmt.Printf("Reachable Roles: %d\n", len(roles))
-		for _, r := range roles {
-			if len(roles) <= 10 {
+		if len(roles) <= 10 {
+			for _, r := range roles {
 				fmt.Printf("  - %s\n", r)
 			}
-		}
-		if len(roles) > 10 {
+		} else {
 			fmt.Printf("  (showing first 10 of %d)\n", len(roles))
 			for _, r := range roles[:10] {
 				fmt.Printf("  - %s\n", r)
@@ -660,7 +660,8 @@ func renderAttackPaths(outputs map[string]any) error {
 	}
 
 	// High-value targets
-	if targets, ok := outputs["high_value_targets"].([]string); ok && len(targets) > 0 {
+	targets := toStringSlice(outputs["high_value_targets"])
+	if len(targets) > 0 {
 		fmt.Printf("High-Value Targets (Admin): %d\n", len(targets))
 		for _, t := range targets {
 			fmt.Printf("  * %s\n", t)

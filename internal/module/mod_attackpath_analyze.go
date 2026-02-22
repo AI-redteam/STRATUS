@@ -122,6 +122,9 @@ func (m *AttackPathAnalyzerModule) Run(ctx sdk.RunContext, prog sdk.Progress) sd
 	if maxDepth <= 0 {
 		maxDepth = 5
 	}
+	if maxDepth > 20 {
+		maxDepth = 20
+	}
 	minSeverity := ctx.InputString("min_severity")
 	if minSeverity == "" {
 		minSeverity = "medium"
@@ -607,7 +610,8 @@ func extractService(action string) string {
 	return ""
 }
 
-// matchARNGlob does simple glob matching on ARNs (supports * and ? wildcards).
+// matchARNGlob does simple glob matching on ARNs (supports * wildcards).
+// Examples: "*AdminRole*", "arn:aws:iam::123*", "*"
 func matchARNGlob(arn, pattern string) bool {
 	if pattern == "" || pattern == "*" {
 		return true
@@ -619,11 +623,11 @@ func simpleGlobMatch(pattern, s string) bool {
 	if pattern == "*" {
 		return true
 	}
-	if !strings.Contains(pattern, "*") && !strings.Contains(pattern, "?") {
+	if !strings.Contains(pattern, "*") {
 		return strings.Contains(s, pattern)
 	}
 
-	// Simple glob: split on * and check parts match in order
+	// Split on * and check that literal parts match in order
 	parts := strings.Split(pattern, "*")
 	pos := 0
 	for i, part := range parts {

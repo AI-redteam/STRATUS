@@ -53,7 +53,7 @@ export function Sidebar() {
 
       {/* Version */}
       <div className="px-5 py-3 border-t border-stratus-border text-xs text-stratus-muted">
-        v0.1.0-dev
+        v1.0.0
       </div>
     </aside>
   );

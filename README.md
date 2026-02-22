@@ -2,6 +2,9 @@
 
 **AWS Adversary Emulation & Security Testing Framework**
 
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/02f719e9-37a4-4d42-96aa-e16e8b55c4d9" />
+
+
 > Authorized security testing use only.
 
 STRATUS is an operator-focused framework for authorized AWS security testing and adversary emulation. Think Metasploit/Cobalt Strike mental model applied to the AWS cloud: centralized identity management, permission-aware pivot graphing, modular offensive operations, attack path analysis, and full audit trail for evidence collection.
